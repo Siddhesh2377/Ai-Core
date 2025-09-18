@@ -496,12 +496,13 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*
 
     for (int i = 0; i < to_gen; ++i, ++cur_pos) {
         if (g_stop_requested) { LOGI("Generation stopped by user"); break; }
-        llama_token tok = llama_sampler_sample(g_sampler, g_ctx, -1); llama_sampler_accept(g_sampler, tok);
+        llama_token tok = llama_sampler_sample(g_sampler, g_ctx, -1);
+        llama_sampler_accept(g_sampler, tok);
         if (i == 0 && (tok == eos || tok == eot)) { llama_token sp[4]; int nsp = llama_tokenize(vocab, " ", 1, sp, 4, true, true); if (nsp > 0) tok = sp[0]; }
         if (tok == eos || tok == eot) break;
 
         std::string piece = detok_piece(vocab, tok);
-        LOGI("TOKENS :: %s", piece.c_str());
+        LOGI("TOKENS :: %s :: %d", piece.c_str(), tok);
         bool completed = false; if (g_tools_enabled) completed = maybe_collect_tool_json_chunk(piece);
         if (completed) {
             if (looks_like_toolcall_json(g_tool_accum)) {
@@ -524,4 +525,254 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*
     flush_utf8_carry(env, jcallback);
     jni_on_done(env, jcallback);
     return JNI_TRUE;
+}
+
+// Fixed initialization function with proper return type
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jstring jpath,
+                                                       jint jthreads, jint gpuLayers,
+                                                       jboolean useMMAP, jint ctxSize) {
+    if (!env || !jpath) {
+        LOGE("Invalid JNI parameters");
+        return JNI_FALSE;
+    }
+
+    std::lock_guard<std::mutex> _lock(g_init_mtx);
+
+    // Convert Java string
+    const char* cstr = env->GetStringUTFChars(jpath, nullptr);
+    if (!cstr) {
+        LOGE("Failed to get path string");
+        return JNI_FALSE;
+    }
+
+    const std::string path(cstr);
+    env->ReleaseStringUTFChars(jpath, cstr);
+
+    LOGI("Initializing model for embeddings: %s", path.c_str());
+
+    // Clean up existing resources
+    free_everything();
+    llama_backend_init();
+
+    const int physCores = count_physical_cores();
+    int gpu_layers = gpuLayers;
+    if (gpu_layers < 0) gpu_layers = 0;
+    if (gpu_layers > 32) gpu_layers = 32;  // More reasonable upper limit
+
+    // Model parameters
+    llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = gpu_layers;
+    mparams.use_mmap = useMMAP;
+    mparams.use_mlock = false;
+    mparams.check_tensors = true;
+
+    LOGI("Loading model with %d GPU layers", gpu_layers);
+    g_model = llama_load_model_from_file(path.c_str(), mparams);
+    if (!g_model) {
+        LOGE("Failed to load model: %s", path.c_str());
+        free_everything();
+        return JNI_FALSE;
+    }
+
+    LOGI("Model loaded successfully");
+
+    // Context parameters - CRITICAL: Enable embeddings
+    llama_context_params cparams = llama_context_default_params();
+    cparams.n_ctx = ctxSize > 0 ? ctxSize : 2048;
+    cparams.n_batch = 256;
+    cparams.n_ubatch = 64;
+    cparams.offload_kqv = true;  // Can help with GPU acceleration
+    cparams.n_seq_max = 1;
+    cparams.n_threads = jthreads > 0 ? jthreads : physCores;
+    cparams.n_threads_batch = cparams.n_threads;
+    cparams.no_perf = true;
+
+    // MOST IMPORTANT: Enable embeddings
+    cparams.embeddings = true;
+
+    LOGI("Creating context with embeddings enabled");
+    g_ctx = llama_new_context_with_model(g_model, cparams);
+    if (!g_ctx) {
+        LOGE("Failed to create context");
+        free_everything();
+        return JNI_FALSE;
+    }
+
+    // Persist runtime knobs
+    g_ctx_size = cparams.n_ctx;
+    g_n_batch = cparams.n_batch;
+
+    // Verify embeddings are actually enabled
+    int32_t n_embd = llama_n_embd(g_model);
+    if (n_embd <= 0) {
+        LOGE("Model does not support embeddings (n_embd = %d)", n_embd);
+        free_everything();
+        return JNI_FALSE;
+    }
+
+    LOGI("Embedding model initialized successfully:");
+    LOGI("  - GPU layers: %d", gpu_layers);
+    LOGI("  - Context size: %d", cparams.n_ctx);
+    LOGI("  - Batch size: %d", cparams.n_batch);
+    LOGI("  - Embedding dim: %d", n_embd);
+    LOGI("  - Embeddings enabled: true");
+
+    return JNI_TRUE;
+}
+
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtext) {
+    if (!g_ctx || !g_model) {
+        LOGE("Embed: Context or model not initialized");
+        return nullptr;
+    }
+
+    const std::string text = jstr_to_utf8(env, jtext);
+    if (text.empty()) {
+        LOGE("Embed: Empty input text");
+        return nullptr;
+    }
+
+    LOGI("Embed: Processing text (length=%d)", (int)text.size());
+
+    // Get vocab from model (matching nativeGenerateStream pattern)
+    const llama_vocab *vocab = llama_model_get_vocab(g_model);
+    if (!vocab) {
+        LOGE("Embed: Failed to get vocab");
+        return nullptr;
+    }
+
+    // Clear context state before embedding (following nativeGenerateStream pattern)
+    {
+        llama_memory_t mem = llama_get_memory(g_ctx);
+        if (mem) {
+            llama_memory_clear(mem, /*data=*/true);
+        }
+    }
+
+    // Tokenize text (following nativeGenerateStream pattern exactly)
+    std::vector<llama_token> toks;
+    {
+        int32_t guess = (int32_t) text.size() + 8;
+        toks.resize((size_t) guess);
+        int32_t n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(), (int32_t) toks.size(), true, true);
+        if (n < 0) {
+            toks.resize((size_t) (-n));
+            n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(), (int32_t) toks.size(), true, true);
+        }
+        if (n < 0) {
+            LOGE("Embed: Tokenization failed");
+            return nullptr;
+        }
+        toks.resize((size_t) n);
+        LOGI("Embed: Tokenized to %d tokens", (int)toks.size());
+    }
+
+    if (toks.empty()) {
+        LOGE("Embed: No tokens generated");
+        return nullptr;
+    }
+
+    // Check context capacity
+    if ((int32_t)toks.size() >= g_ctx_size) {
+        LOGE("Embed: Text too long for context (%d tokens, max %d)", (int)toks.size(), g_ctx_size);
+        return nullptr;
+    }
+
+    // Create batch for ALL tokens - this is crucial for embeddings
+    llama_batch batch = llama_batch_init((int32_t)toks.size(), 0, 1);
+    if (!batch.token) {
+        LOGE("Embed: Failed to create batch");
+        return nullptr;
+    }
+
+    // Fill batch - CRITICAL: ALL tokens must be marked correctly for embeddings
+    for (int32_t i = 0; i < (int32_t)toks.size(); ++i) {
+        batch.token[i] = toks[i];
+        batch.pos[i] = i;
+        batch.n_seq_id[i] = 1;
+        batch.seq_id[i][0] = 0;
+        // For embeddings: all tokens should have logits = true or at least the last one
+        batch.logits[i] = (i == (int32_t)toks.size() - 1); // Only last token needs logits
+    }
+    batch.n_tokens = (int32_t)toks.size();
+
+    LOGI("Embed: Created batch with %d tokens, decoding...", batch.n_tokens);
+
+    // Decode the entire batch at once
+    int rc = llama_decode(g_ctx, batch);
+    if (rc != 0) {
+        LOGE("Embed: Decode failed with code %d", rc);
+        llama_batch_free(batch);
+        return nullptr;
+    }
+
+    LOGI("Embed: Decode completed successfully");
+    llama_batch_free(batch);
+
+    // Get embeddings dimension
+    int32_t n_embd = llama_n_embd(g_model);
+    if (n_embd <= 0) {
+        LOGE("Embed: Invalid embedding dimension: %d", n_embd);
+        return nullptr;
+    }
+
+    // Try to get embeddings using different methods
+    const float* embeddings = nullptr;
+
+    // Method 1: Try sequence-specific embeddings first
+    embeddings = llama_get_embeddings_seq(g_ctx, 0);
+    if (embeddings) {
+        LOGI("Embed: Got embeddings via llama_get_embeddings_seq");
+    } else {
+        // Method 2: Try regular embeddings
+        embeddings = llama_get_embeddings(g_ctx);
+        if (embeddings) {
+            LOGI("Embed: Got embeddings via llama_get_embeddings");
+        } else {
+            LOGE("Embed: Both embedding methods failed");
+
+            // Debug info
+            LOGI("Embed: Debug - n_embd=%d, context valid=%s", n_embd, g_ctx ? "yes" : "no");
+            return nullptr;
+        }
+    }
+
+    LOGI("Embed: Got embeddings, dimension=%d", n_embd);
+
+    // Verify embeddings are not all zeros (common issue)
+    bool all_zero = true;
+    for (int32_t i = 0; i < std::min(n_embd, 10); ++i) {
+        if (embeddings[i] != 0.0f) {
+            all_zero = false;
+            break;
+        }
+    }
+
+    if (all_zero) {
+        LOGI("Embed: Warning - embeddings appear to be all zeros");
+    } else {
+        LOGI("Embed: Embeddings look valid (first few values non-zero)");
+    }
+
+    // Create Java float array
+    jfloatArray result = env->NewFloatArray(n_embd);
+    if (!result) {
+        LOGE("Embed: Failed to create Java array");
+        return nullptr;
+    }
+
+    // Copy embeddings to Java array
+    env->SetFloatArrayRegion(result, 0, n_embd, embeddings);
+
+    if (env->ExceptionCheck()) {
+        LOGE("Embed: Exception while copying embeddings");
+        env->ExceptionClear();
+        return nullptr;
+    }
+
+    LOGI("Embed: Successfully created embedding array");
+    return result;
 }

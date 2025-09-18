@@ -27,8 +27,8 @@ add_subdirectory(/home/home/dev/AI/llama.cpp build-llama)
 # for GameActivity/NativeActivity derived applications, the same library name must be
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
-        # List C/C++ source files with relative paths to this CMakeLists.txt.
-        ai_core.cpp cpu_helper.cpp)
+        ai_core.cpp cpu_helper.cpp embed_search.cpp)
+
 
 
 # --- cpufeatures helper ------------------------------------------------------
