@@ -147,7 +147,12 @@ class NativeLib {
                     val chunk = sb.toString()
                     sb.setLength(0)
                     lastFlush = System.nanoTime()
-                    uiScope.launch(Dispatchers.Main.immediate) { onGenerate(chunk) }
+                    uiScope.launch(Dispatchers.Main.immediate) {
+                        val cleanToken = chunk
+                            .replace("[PAD]", "")
+                            .replace(Regex("\\[unused\\d+]"), "")
+                        if(cleanToken.isNotEmpty()) uiScope.launch(Dispatchers.Main) { onGenerate(cleanToken) }
+                    }
                 }
             }
             try {
@@ -211,35 +216,31 @@ interface StreamCallback {
 }
 
 class EmbeddingManager(private val nativeLib: NativeLib) {
-    private var isInitialized = false
+    private var initialized = false
+    private var embeddingDim = -1
 
     // Initialize embedding model using the same model as chat
-    suspend fun initializeEmbedding(
-        modelPath: String,
-        contextSize: Int = 2048,
-        gpuLayers: Int = 0
-    ): Result<Unit> = withContext(Dispatchers.IO) {
+    suspend fun initializeEmbedding(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            Log.i("EmbeddingManager", "Initializing embedding model at: $modelPath")
-
-            val success = nativeLib.nativeInitForEmbeddings(
-                modelPath,
-                4, // threads
-                gpuLayers,
-                false, // useMMAP
-                contextSize
-            )
-
-            if (success) {
-                isInitialized = true
-                Log.i("EmbeddingManager", "Embedding model initialized successfully")
-                Result.success(Unit)
-            } else {
-                Log.e("EmbeddingManager", "Failed to initialize embedding model")
-                Result.failure(Exception("Failed to initialize embedding model"))
+            val ok = nativeLib.nativeInitForEmbeddings(modelPath, 4, 0, true, 512)
+            if (!ok) {
+                return@withContext Result.failure(Exception("Failed to initialize embedding model"))
             }
+
+            Log.i("EmbeddingManager", "Native init triggered, warming up...")
+
+            // 🔥 Warmup embed to make sure JNI context is really ready
+            val warmup = nativeLib.embed("warmup")
+            if (warmup == null || warmup.isEmpty()) {
+                Log.e("EmbeddingManager", "Warmup failed, embeddings not ready yet")
+                return@withContext Result.failure(Exception("Warmup embed failed"))
+            }
+
+            embeddingDim = warmup.size
+            initialized = true
+            Log.i("EmbeddingManager", "Embedding model fully ready (dim=$embeddingDim)")
+            Result.success(Unit)
         } catch (e: Exception) {
-            Log.e("EmbeddingManager", "Error initializing embedding model", e)
             Result.failure(e)
         }
     }
@@ -249,7 +250,7 @@ class EmbeddingManager(private val nativeLib: NativeLib) {
         text: String,
         meanPool: Boolean = true // This parameter is ignored for now
     ): Result<FloatArray> = withContext(Dispatchers.Default) {
-        if (!isInitialized) {
+        if (!initialized) {
             return@withContext Result.failure(Exception("Embedding model not initialized"))
         }
 
@@ -269,7 +270,6 @@ class EmbeddingManager(private val nativeLib: NativeLib) {
             Result.failure(e)
         }
     }
-
     // Batch embeddings
     suspend fun getEmbeddings(
         texts: List<String>,
@@ -306,7 +306,7 @@ class EmbeddingManager(private val nativeLib: NativeLib) {
 
     // Clean up resources - just mark as not initialized since we're using the shared model
     fun release() {
-        isInitialized = false
+        initialized = false
         Log.i("EmbeddingManager", "Embedding manager released")
     }
 }
