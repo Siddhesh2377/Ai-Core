@@ -5,31 +5,24 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.mp.ai_core.ui.theme.AiCoreTheme
+import kotlinx.coroutines.*
 import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
@@ -44,74 +37,111 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         initializeEmbeddings()
 
-
-
-        // init LLM (m1)
-
-
         setContent {
-            MaterialTheme {
+            AiCoreTheme{
                 var query by remember { mutableStateOf("") }
                 var answer by remember { mutableStateOf("") }
                 val scope = rememberCoroutineScope()
                 var job: Job? by remember { mutableStateOf(null) }
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(36.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    BasicTextField(
-                        value = query,
-                        onValueChange = { query = it },
+                Scaffold {
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .weight(1f)
-                    )
-
-                    Button(onClick = {
-                        if (query.isNotBlank()) {
-                            job?.cancel() // cancel previous stream if running
-                            answer = ""
-                            job = scope.launch {
-                                runRag(
-                                    query = query,
-                                    uiScope = scope,
-                                    onUpdate = { token -> answer += token },
-                                    onDone = { Log.i("RAG", "Streaming complete") },
-                                    onError = { err -> answer = "Error: $err" }
-                                )
-                            }
-                        } else {
-                            answer = "⚠️ Please enter a query"
-                        }
-                    }) {
-                        Text("Ask")
-                    }
-
-                    Button(onClick = {
-                        CoroutineScope(Dispatchers.IO).launch {
-                            val ok = native.initModel(
-                                path = m1,
-                                threads = Runtime.getRuntime().availableProcessors().coerceAtLeast(2) - 1,
-                                gpuLayers = 10,
-                                useMMAP = true,
-                                useMLOCK = false,
-                                ctxSize = 4096,
-                                temp = 0.7f,
-                                topK = 40,
-                                topP = 0.9f,
-                                minP = 0.0f
+                            .padding(it)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Text(
+                            text = "ToolNeuron RAG Demo",
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Bold,
                             )
-                            if (!ok) Log.e("AiCore", "Failed to init model at $m1")
-                        }
-                    }) {
-                        Text("Load M1")
-                    }
+                        )
 
-                    Text(text = answer, fontWeight = FontWeight.Bold)
+                        // Query Box
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            textStyle = TextStyle(fontSize = 16.sp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        )
+
+                        // Buttons
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (query.isNotBlank()) {
+                                        job?.cancel()
+                                        answer = ""
+                                        job = scope.launch {
+                                            runRag(
+                                                query = query,
+                                                uiScope = scope,
+                                                onUpdate = { token -> answer += token },
+                                                onDone = { Log.i("RAG", "Streaming complete") },
+                                                onError = { err -> answer = "Error: $err" }
+                                            )
+                                        }
+                                    } else {
+                                        answer = "⚠️ Please enter a query"
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Ask")
+                            }
+
+                            OutlinedButton(
+                                onClick = {
+                                    CoroutineScope(Dispatchers.IO).launch {
+                                        val ok = native.initModel(
+                                            path = m1,
+                                            threads = Runtime.getRuntime().availableProcessors()
+                                                .coerceAtLeast(2) - 1,
+                                            gpuLayers = 10,
+                                            useMMAP = true,
+                                            useMLOCK = false,
+                                            ctxSize = 4096,
+                                            temp = 0.7f,
+                                            topK = 40,
+                                            topP = 0.9f,
+                                            minP = 0.0f
+                                        )
+                                        if (!ok) Log.e("AiCore", "Failed to init model at $m1")
+                                    }
+                                },
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Load Model")
+                            }
+                        }
+
+                        // Answer Box
+                        Text(
+                            text = "Answer:",
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 18.sp,
+                            color = Color.White
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 120.dp)
+                                .padding(12.dp)
+                        ) {
+                            Text(
+                                text = answer,
+                                fontSize = 16.sp,
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -134,11 +164,10 @@ class MainActivity : ComponentActivity() {
             return null
         }
 
-        val topDocs = vectorStore.search(queryEmbedding, topK = 3)
+        val topDocs = vectorStore.search(queryEmbedding, topK = 5)
         val context = topDocs.joinToString("\n") { it.text }
         val prompt = "Use the following context to answer:\n$context\n\nQuestion: $query"
 
-        // 1️⃣ Ensure the text-gen model is loaded
         val ok = native.initModel(
             path = m1,
             threads = Runtime.getRuntime().availableProcessors().coerceAtLeast(2) - 1,
@@ -156,18 +185,16 @@ class MainActivity : ComponentActivity() {
             return null
         }
 
-        // 2️⃣ Generate streaming output
-        return  native.generateStreaming(
+        return native.generateStreaming(
             prompt = prompt,
             maxTokens = 512,
             uiScope = uiScope,
-            onStart = { onUpdate("") }, // clear previous text
+            onStart = { onUpdate("") },
             onGenerate = { token -> onUpdate(token) },
             onError = { err -> onError(err) },
             onDone = { onDone() }
         )
     }
-
 
     private fun initializeEmbeddings() {
         lifecycleScope.launch {
@@ -189,10 +216,30 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun seedDocs() {
         val docs = listOf(
+            //My Life
+            "Rey Lost Her Leg Yesterday",
+            "Rey is a 25-year-old woman who lives in Bangalore.",
+            "Rey is an avid reader and loves to travel.",
+            "Rey has a dog named Max who she adores.",
+            "Rey works as a software engineer at a startup in Bangalore.",
+            "Rey lost her leg in a car accident yesterday.",
+            "Rey is currently recovering from her surgery.",
+            
+            // Tech / AI
             "Android is an open-source operating system developed by Google.",
-            "RAG stands for Retrieval Augmented Generation.",
-            "Kotlin is officially supported for Android development.",
-            "Android is the King of the mobile OS world."
+            "RAG stands for Retrieval Augmented Generation, a method to ground LLMs with external knowledge.",
+            "Kotlin is officially supported for Android development and preferred for Jetpack Compose.",
+            "Tool-Neuron is an offline-first AI operating system for mobile, built around modular plugins.",
+
+            // Science
+            "Cells are the basic building blocks of life.",
+            "The sun is the star at the center of our solar system and provides energy for life on Earth.",
+            "Water is essential for all known forms of life, covering 71% of Earth's surface.",
+
+            // History / General Knowledge
+            "The printing press was invented by Johannes Gutenberg in the 15th century.",
+            "The Great Wall of China was built to protect against invasions and raids.",
+            "World War II lasted from 1939 to 1945 and involved most of the world’s nations."
         )
 
         docs.forEachIndexed { i, text ->
@@ -214,7 +261,7 @@ class VectorStore {
         docs.add(Doc(id, text, embedding))
     }
 
-    fun search(queryEmbedding: FloatArray, topK: Int = 3): List<Doc> {
+    fun search(queryEmbedding: FloatArray, topK: Int = 5): List<Doc> {
         return docs
             .map { it to cosineSimilarity(it.embedding, queryEmbedding) }
             .sortedByDescending { it.second }
