@@ -10,8 +10,107 @@ import kotlin.math.sqrt
 
 private const val TAG = "MicroAI"
 
-class NativeLib {
+class NativeLib private constructor(private val instanceId: String) {
+    companion object {
+        private val instances = mutableMapOf<String, NativeLib>()
 
+        init {
+            System.loadLibrary("ai_core")
+        }
+
+        fun getGenerationInstance(): NativeLib {
+            return instances.getOrPut("generation") {
+                NativeLib("generation")
+            }
+        }
+
+        fun getEmbeddingInstance(): NativeLib {
+            return instances.getOrPut("embedding") {
+                NativeLib("embedding")
+            }
+        }
+
+        fun releaseInstance(instanceId: String) {
+            instances[instanceId]?.let { instance ->
+                instance.nativeRelease()
+                instances.remove(instanceId)
+            }
+        }
+
+        fun releaseAllInstances() {
+            instances.values.forEach { it.nativeRelease() }
+            instances.clear()
+        }
+    }
+
+    private var isMainModelInitialized = false
+    private var isEmbeddingModelInitialized = false
+
+    fun initModel(
+        path: String,
+        threads: Int = Runtime.getRuntime().availableProcessors() / 2,
+        gpuLayers: Int = 0,
+        useMMAP: Boolean = true,
+        useMLOCK: Boolean = false,
+        ctxSize: Int = 4096,
+        temp: Float = 0.7f,
+        topK: Int = 20,
+        topP: Float = 0.9f,
+        minP: Float = 0.0f
+    ): Boolean {
+        // Only release this instance, not all instances
+        nativeRelease()
+        return try {
+            val ok = nativeInit(
+                path, threads, gpuLayers, useMMAP, useMLOCK,
+                ctxSize, temp, topK, topP, minP
+            )
+            if (ok) {
+                isMainModelInitialized = true
+                isEmbeddingModelInitialized = false
+                Log.i("NativeLib-$instanceId", "Main model initialized: $path")
+            } else {
+                Log.e("NativeLib-$instanceId", "Main model initialization failed: $path")
+            }
+            ok
+        } catch (t: Throwable) {
+            Log.e("NativeLib-$instanceId", "Main model init error", t)
+            false
+        }
+    }
+
+    fun initEmbeddingModel(
+        path: String,
+        threads: Int = 4,
+        gpuLayers: Int = 0,
+        useMMAP: Boolean = true,
+        ctxSize: Int = 512
+    ): Boolean {
+        nativeRelease()
+        Log.d("NativeLib-$instanceId", "Initializing embedding model: $path")
+        return try {
+            val ok = nativeInitForEmbeddings(
+                path, threads, gpuLayers, useMMAP, ctxSize
+            )
+            if (ok) {
+                isEmbeddingModelInitialized = true
+                isMainModelInitialized = false
+                Log.i("NativeLib-$instanceId", "Embedding model initialized successfully")
+            } else {
+                Log.e("NativeLib-$instanceId", "Embedding model initialization failed: $path")
+            }
+            ok
+        } catch (t: Throwable) {
+            Log.e("NativeLib-$instanceId", "Embedding model init error", t)
+            false
+        }
+    }
+
+    // Add method to check model state
+    fun isGenerationReady(): Boolean = isMainModelInitialized
+    fun isEmbeddingReady(): Boolean = isEmbeddingModelInitialized
+
+    // Other external functions remain the same
     external fun nativeInit(
         path: String,
         threads: Int,
@@ -26,10 +125,7 @@ class NativeLib {
     ): Boolean
 
     external fun nativeRelease(): Boolean
-
     external fun nativeSetChatTemplate(template: String)
-
-    // Fixed: Return Boolean instead of Unit
     external fun nativeInitForEmbeddings(
         path: String,
         jthreads: Int,
@@ -37,82 +133,18 @@ class NativeLib {
         useMMAP: Boolean,
         nCtx: Int
     ): Boolean
-
     external fun nativeGenerateStream(
         prompt: String,
         maxTokens: Int,
         callback: StreamCallback
     ): Boolean
-
-    // Keep the simple embed function
     external fun embed(text: String): FloatArray?
-
     external fun nativeSetToolsJson(toolsJson: String)
     external fun nativeSetSystemPrompt(prompt: String)
     external fun nativeGetModelInfo(): String
     external fun nativeStopGeneration()
 
-    companion object {
-        init {
-            System.loadLibrary("ai_core")
-        }
-    }
-
-    /** Initialize model safely */
-    fun initModel(
-        path: String,
-        threads: Int = Runtime.getRuntime().availableProcessors() / 2,
-        gpuLayers: Int = 0,
-        useMMAP: Boolean = true,
-        useMLOCK: Boolean = false,
-        ctxSize: Int = 4096,
-        temp: Float = 0.7f,
-        topK: Int = 20,
-        topP: Float = 0.9f,
-        minP: Float = 0.0f
-    ): Boolean {
-        return try {
-            val ok = nativeInit(
-                path, threads, gpuLayers, useMMAP, useMLOCK,
-                ctxSize, temp, topK, topP, minP
-            )
-            if (!ok) {
-                Log.e(TAG, "Model initialization failed at path: $path")
-            }
-            ok
-        } catch (t: Throwable) {
-            Log.e(TAG, "Model init error", t)
-            false
-        }
-    }
-
-    suspend fun getEmbedding(text: String): Result<FloatArray> = withContext(Dispatchers.Default) {
-        val modelInfo = runCatching { nativeGetModelInfo() }.getOrNull()
-        if (modelInfo.isNullOrEmpty()) {
-            val err = "No model loaded. Please call initModel() first."
-            Log.e(TAG, err)
-            return@withContext Result.failure(Exception(err))
-        }
-
-        try {
-            val embedding = embed(text)
-            if (embedding != null) {
-                Log.d(TAG, "Embedding generated successfully with size: ${embedding.size}")
-                Result.success(embedding)
-            } else {
-                Log.e(TAG, "Embedding is null")
-                Result.failure(Exception("Failed to generate embedding"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error generating embedding", e)
-            Result.failure(e)
-        }
-    }
-
-    /** System prompt setter */
     fun setSystemPrompt(prompt: String) = nativeSetSystemPrompt(prompt)
-
-    /** Streamed generation with model check */
     fun generateStreaming(
         prompt: String,
         maxTokens: Int = 512,
@@ -132,12 +164,9 @@ class NativeLib {
             onError(err)
             return SupervisorJob().apply { complete() }
         }
-
         // Enable/disable tools for this turn
         if (toolsJson != null) nativeSetToolsJson(toolsJson) else nativeSetToolsJson("")
-
         val tokenCh = Channel<String>(capacity = 256)
-
         val batchPeriodMs = 35L
         val batcherJob = uiScope.launch(Dispatchers.Default) {
             val sb = StringBuilder()
@@ -164,7 +193,6 @@ class NativeLib {
                 flush(true)
             }
         }
-
         val cb = object : StreamCallback {
             override fun onToken(token: String) {
                 if (!tokenCh.trySend(token).isSuccess) {
@@ -182,12 +210,13 @@ class NativeLib {
                 tokenCh.close()
             }
         }
-
         onStart()
-
         val parentJob = uiScope.launch(Dispatchers.IO) {
             try {
-                nativeGenerateStream(prompt, maxTokens, cb)
+                val success = nativeGenerateStream(prompt, maxTokens, cb)
+                if (!success) {
+                    throw IllegalStateException("nativeGenerateStream returned false")
+                }
             } catch (t: Throwable) {
                 Log.e(TAG, "nativeGenerateStream error", t)
                 withContext(Dispatchers.Main.immediate) { onError(t.message ?: "Native error") }
@@ -195,7 +224,6 @@ class NativeLib {
                 tokenCh.close()
             }
         }
-
         parentJob.invokeOnCompletion {
             batcherJob.cancel()
             uiScope.launch {
@@ -205,6 +233,7 @@ class NativeLib {
         }
         return parentJob
     }
+
 }
 
 @Keep
@@ -215,54 +244,57 @@ interface StreamCallback {
     fun onError(message: String)
 }
 
-class EmbeddingManager(private val nativeLib: NativeLib) {
+class EmbeddingManager {
+    companion object {
+        @Volatile
+        private var instance: EmbeddingManager? = null
+
+        fun getInstance(): EmbeddingManager {
+            return instance ?: synchronized(this) {
+                instance ?: EmbeddingManager().also { instance = it }
+            }
+        }
+    }
+
+    private val embeddingLib = NativeLib.getEmbeddingInstance()
     private var initialized = false
     private var embeddingDim = -1
 
-    // Initialize embedding model using the same model as chat
     suspend fun initializeEmbedding(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
         try {
-            val ok = nativeLib.nativeInitForEmbeddings(modelPath, 4, 0, true, 512)
+            Log.d("EmbeddingManager", "Initializing embedding model: $modelPath")
+            val ok = embeddingLib.initEmbeddingModel(modelPath, 4, 0, true, 512)
             if (!ok) {
+                Log.e("EmbeddingManager", "Failed to initialize embedding model: $modelPath")
                 return@withContext Result.failure(Exception("Failed to initialize embedding model"))
             }
 
-            Log.i("EmbeddingManager", "Native init triggered, warming up...")
-
-            // 🔥 Warmup embed to make sure JNI context is really ready
-            val warmup = nativeLib.embed("warmup")
+            // Warmup
+            val warmup = embeddingLib.embed("warmup")
             if (warmup == null || warmup.isEmpty()) {
-                Log.e("EmbeddingManager", "Warmup failed, embeddings not ready yet")
-                return@withContext Result.failure(Exception("Warmup embed failed"))
+                Log.e("EmbeddingManager", "Warmup failed")
+                return@withContext Result.failure(Exception("Warmup failed"))
             }
 
             embeddingDim = warmup.size
             initialized = true
-            Log.i("EmbeddingManager", "Embedding model fully ready (dim=$embeddingDim)")
+            Log.i("EmbeddingManager", "Embedding model ready (dim=$embeddingDim)")
             Result.success(Unit)
         } catch (e: Exception) {
+            Log.e("EmbeddingManager", "Initialization error", e)
             Result.failure(e)
         }
     }
 
-    // Get embedding using the simple embed function
-    suspend fun getEmbedding(
-        text: String,
-        meanPool: Boolean = true // This parameter is ignored for now
-    ): Result<FloatArray> = withContext(Dispatchers.Default) {
+    suspend fun getEmbedding(text: String): Result<FloatArray> = withContext(Dispatchers.Default) {
         if (!initialized) {
             return@withContext Result.failure(Exception("Embedding model not initialized"))
         }
-
         try {
-            Log.d("EmbeddingManager", "Getting embedding for text: ${text.take(50)}...")
-            val embedding = nativeLib.embed(text)
-
+            val embedding = embeddingLib.embed(text)
             if (embedding != null && embedding.isNotEmpty()) {
-                Log.d("EmbeddingManager", "Embedding generated successfully with size: ${embedding.size}")
                 Result.success(embedding)
             } else {
-                Log.e("EmbeddingManager", "Empty or null embedding returned")
                 Result.failure(Exception("Empty embedding returned"))
             }
         } catch (e: Exception) {
@@ -270,33 +302,28 @@ class EmbeddingManager(private val nativeLib: NativeLib) {
             Result.failure(e)
         }
     }
-    // Batch embeddings
+
     suspend fun getEmbeddings(
         texts: List<String>,
-        meanPool: Boolean = true
     ): List<Result<FloatArray>> = withContext(Dispatchers.Default) {
         texts.map { text ->
-            getEmbedding(text, meanPool)
+            getEmbedding(text)
         }
     }
 
-    // Calculate cosine similarity
     fun cosineSimilarity(embedding1: FloatArray, embedding2: FloatArray): Float {
         if (embedding1.size != embedding2.size) {
             Log.w("EmbeddingManager", "Embedding size mismatch: ${embedding1.size} vs ${embedding2.size}")
             return 0f
         }
-
         var dotProduct = 0f
         var norm1 = 0f
         var norm2 = 0f
-
         for (i in embedding1.indices) {
             dotProduct += embedding1[i] * embedding2[i]
             norm1 += embedding1[i] * embedding1[i]
             norm2 += embedding2[i] * embedding2[i]
         }
-
         return if (norm1 == 0f || norm2 == 0f) {
             0f
         } else {
@@ -304,7 +331,6 @@ class EmbeddingManager(private val nativeLib: NativeLib) {
         }
     }
 
-    // Clean up resources - just mark as not initialized since we're using the shared model
     fun release() {
         initialized = false
         Log.i("EmbeddingManager", "Embedding manager released")
