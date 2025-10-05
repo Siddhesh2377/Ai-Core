@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlin.math.sqrt
 
-private const val TAG = "MicroAI"
+const val TAG = "MicroAI"
 
 class NativeLib private constructor(private val instanceId: String) {
     companion object {
@@ -23,6 +23,9 @@ class NativeLib private constructor(private val instanceId: String) {
                 NativeLib("generation")
             }
         }
+
+        fun getGenerationServiceInstance(): NativeLib =
+            instances.getOrPut("service") { NativeLib("service") }
 
         fun getEmbeddingInstance(): NativeLib {
             return instances.getOrPut("embedding") {
@@ -145,6 +148,7 @@ class NativeLib private constructor(private val instanceId: String) {
     external fun nativeStopGeneration()
 
     fun setSystemPrompt(prompt: String) = nativeSetSystemPrompt(prompt)
+
     fun generateStreaming(
         prompt: String,
         maxTokens: Int = 512,

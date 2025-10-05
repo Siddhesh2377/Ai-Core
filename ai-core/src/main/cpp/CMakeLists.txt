@@ -14,11 +14,10 @@ project("ai_core")
 
 #load local llama.cpp
 if(GGML_VULKAN)
-    include_directories(${VULKAN_HEADERS_INCLUDE_DIR})
+    include_directories(${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include)
+    include_directories(/home/home/dev/LIBS/gpu/Vulkan-Headers/include)
 endif()
-include_directories(/home/home/dev/LIBS/gpu/Vulkan-Headers/include/vulkan)
 include_directories(/home/home/dev/AI/llama.cpp/src)
-
 add_subdirectory(/home/home/dev/AI/llama.cpp build-llama)
 #add_subdirectory(C:/Users/Rudraraj/Music/llama.cpp build-llama)
 

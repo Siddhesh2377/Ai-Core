@@ -29,7 +29,6 @@ android {
                 arguments += "-DGGML_LLAMAFILE=ON"
                 arguments += "-DGGML_PAGE_SIZE=16384"
                 arguments += "-DVULKAN_HEADERS_INCLUDE_DIR=/usr/include"
-                arguments += "-DGGML_VULKAN_DEBUG=OFF"
                 arguments += "-DGGML_VULKAN=OFF"
                 arguments += "-DCMAKE_BUILD_TYPE=Release"
 
@@ -64,6 +63,9 @@ android {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_11)
         }
+    }
+    buildFeatures{
+        aidl = true
     }
 }
 
