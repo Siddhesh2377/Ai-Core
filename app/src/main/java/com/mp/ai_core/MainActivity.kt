@@ -17,6 +17,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +28,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
@@ -44,7 +57,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -100,10 +115,10 @@ class MainActivity : ComponentActivity() {
 
     private var answerFlow: StateFlow<String> =
         tokenChannel.consumeAsFlow().scan("") { acc, token -> acc + token }.stateIn(
-                scope = lifecycleScope,
-                started = SharingStarted.WhileSubscribed(5_000),
-                initialValue = ""
-            )
+            scope = lifecycleScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = ""
+        )
 
     /* ---------- 5️⃣  LLM job --------------------------------- */
     private var genJob: Job? = null
@@ -124,7 +139,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         val svcIntent = Intent(this, GenerationService::class.java)
-        startForegroundService(svcIntent)  // foreground service
+        startForegroundService(svcIntent)
         bindService(svcIntent, svcConnection, BIND_AUTO_CREATE)
 
         setContent { AiCoreTheme { AppUi() } }
@@ -132,8 +147,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopTts()          // release AudioTrack if playing
-        // Service remains up; unbind only if you want
+        stopTts()
     }
 
     /* ---------- 8️⃣  UI ---------------------------------- */
@@ -143,107 +157,311 @@ class MainActivity : ComponentActivity() {
         var ttsText by remember { mutableStateOf("Hi bro..!") }
         val answer by answerFlow.collectAsState()
 
-        Scaffold {
+        Scaffold(
+            containerColor = MaterialTheme.colorScheme.background
+        ) { padding ->
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(it)
+                    .padding(padding)
+                    .padding(horizontal = 20.dp, vertical = 16.dp)
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                Text(
-                    text = "ToolNeuron RAG Demo", style = MaterialTheme.typography.headlineSmall
-                )
-
-                BasicTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .background(Color.DarkGray)
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                // Header
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Button(
-                        onClick = {
-                            if (query.isNotBlank()) {
-                                lifecycleScope.launch { shutdownPreviousJob() }
-                                lifecycleScope.launch { runGeneration(query) }
-                            }
-                        }) { Text("Ask") }
-
-                    Button(
-                        onClick = { lifecycleScope.launch { shutdownPreviousJob() } }) { Text("Stop") }
+                    Text(
+                        text = "ToolNeuron AI",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = "RAG Demo Assistant",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
 
-                /* ------ TTS UI ------ */
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                Text(
-                    text = "Text‑to‑Speech", fontWeight = FontWeight.SemiBold, fontSize = 18.sp
-                )
-
-                BasicTextField(
-                    value = ttsText,
-                    onValueChange = { ttsText = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp)
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                        .background(Color.DarkGray)
-                )
-
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(top = 8.dp)
+                // LLM Section
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
                 ) {
-                    Button(
-                        onClick = { loadTtsModelOnce() }) { Text("Load TTS") }
-
-                    Button(
-                        onClick = { lifecycleScope.launch { runTts(ttsText) } },
-                        enabled = ttsText.isNotBlank()
-                    ) { Text("Synthesize") }
-
-                    Button(
-                        onClick = { stopTts() }, enabled = isPlaying
-                    ) { Text("Stop") }
-                }
-
-                /* ------ LLM answer ------ */
-                Text(
-                    "Answer:", fontWeight = FontWeight.SemiBold, fontSize = 18.sp
-                )
-
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 120.dp)
-                        .padding(12.dp)
-                ) {
-                    if (generating.value && !reachedFirstToken.value) {
-                        RobotDecodePlaceholder(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp),
-                            active = true,
-                            base = "Decoding …",
-                            tokenCount = tokenCount.value
-                        )
-                    }
-
-                    if (answer.isNotEmpty()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                         Text(
-                            answer, fontSize = 16.sp, color = MaterialTheme.colorScheme.primary
+                            text = "💬 Ask Question",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
                         )
-                    } else {
-                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Query Input
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 80.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            BasicTextField(
+                                value = query,
+                                onValueChange = { query = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                textStyle = TextStyle(
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                decorationBox = { innerTextField ->
+                                    if (query.isEmpty()) {
+                                        Text(
+                                            "Type your question here...",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                            fontSize = 16.sp
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            )
+                        }
+
+                        // Action Buttons
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (query.isNotBlank()) {
+                                        lifecycleScope.launch { shutdownPreviousJob() }
+                                        lifecycleScope.launch { runGeneration(query) }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = query.isNotBlank() && !generating.value,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Ask", fontSize = 16.sp)
+                            }
+
+                            OutlinedButton(
+                                onClick = { lifecycleScope.launch { shutdownPreviousJob() } },
+                                modifier = Modifier.weight(1f),
+                                enabled = generating.value,
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Stop", fontSize = 16.sp)
+                            }
+                        }
+
+                        // Status Indicator
+                        if (generating.value) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                                Text(
+                                    "Generating... ${tokenCount.value} tokens",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                }
+
+//                // Answer Section
+//                ElevatedCard(
+//                    modifier = Modifier.fillMaxWidth(),
+//                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
+//                ) {
+//                    Column(
+//                        modifier = Modifier
+//                            .fillMaxWidth()
+//                            .padding(20.dp),
+//                        verticalArrangement = Arrangement.spacedBy(12.dp)
+//                    ) {
+//                        Text(
+//                            text = "📝 Answer",
+//                            style = MaterialTheme.typography.titleMedium,
+//                            fontWeight = FontWeight.SemiBold
+//                        )
+//
+//                        Surface(
+//                            modifier = Modifier
+//                                .fillMaxWidth()
+//                                .heightIn(min = 150.dp),
+//                            shape = RoundedCornerShape(12.dp),
+//                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+//                        ) {
+//                            Box(
+//                                modifier = Modifier
+//                                    .fillMaxSize()
+//                                    .padding(16.dp)
+//                            ) {
+//                                when {
+//                                    generating.value && !reachedFirstToken.value -> {
+//                                        RobotDecodePlaceholder(
+//                                            modifier = Modifier.align(Alignment.Center),
+//                                            active = true,
+//                                            base = "Decoding",
+//                                            tokenCount = tokenCount.value
+//                                        )
+//                                    }
+//                                    answer.isNotEmpty() -> {
+//                                        Text(
+//                                            answer,
+//                                            fontSize = 15.sp,
+//                                            lineHeight = 22.sp,
+//                                            color = MaterialTheme.colorScheme.onSurface
+//                                        )
+//                                    }
+//                                    else -> {
+//                                        Text(
+//                                            "Your answer will appear here...",
+//                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+//                                            fontSize = 15.sp,
+//                                            modifier = Modifier.align(Alignment.Center)
+//                                        )
+//                                    }
+//                                }
+//                            }
+//                        }
+//                    }
+//                }
+
+                // TTS Section
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "🔊 Text-to-Speech",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+
+                            if (!ttsConfigLoaded) {
+                                OutlinedButton(
+                                    onClick = { loadTtsModelOnce() },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Load Model", fontSize = 14.sp)
+                                }
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                ) {
+                                    Text(
+                                        "Model Loaded",
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                        }
+
+                        // TTS Input
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 80.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            BasicTextField(
+                                value = ttsText,
+                                onValueChange = { ttsText = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                textStyle = TextStyle(
+                                    fontSize = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                ),
+                                decorationBox = { innerTextField ->
+                                    if (ttsText.isEmpty()) {
+                                        Text(
+                                            "Enter text to synthesize...",
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                            fontSize = 16.sp
+                                        )
+                                    }
+                                    innerTextField()
+                                }
+                            )
+                        }
+
+                        // TTS Controls
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Button(
+                                onClick = { lifecycleScope.launch { runTts(ttsText) } },
+                                enabled = ttsText.isNotBlank() && ttsConfigLoaded && !isPlaying,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Synthesize", fontSize = 16.sp)
+                            }
+
+                            OutlinedButton(
+                                onClick = { stopTts() },
+                                enabled = isPlaying,
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(10.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Text("Stop", fontSize = 16.sp)
+                            }
+                        }
+
+                        if (isPlaying) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
@@ -255,6 +473,7 @@ class MainActivity : ComponentActivity() {
         genJob?.cancelAndJoin()
         _generating.value = false
         _tokenCount.intValue = 0
+        _reachedFirstToken.value = false
     }
 
     private suspend fun runGeneration(prompt: String) {
@@ -262,13 +481,14 @@ class MainActivity : ComponentActivity() {
 
         tokenChannel = Channel(Channel.CONFLATED)
         answerFlow = tokenChannel.consumeAsFlow().scan("") { acc, token -> acc + token }.stateIn(
-                scope = lifecycleScope,
-                started = SharingStarted.WhileSubscribed(5_000),
-                initialValue = ""
-            )
+            scope = lifecycleScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = ""
+        )
 
         _generating.value = true
         _tokenCount.value = 0
+        _reachedFirstToken.value = false
 
         val cb = object : IGenerationCallback.Stub() {
             override fun onToken(token: String?) {
@@ -351,23 +571,21 @@ class MainActivity : ComponentActivity() {
     private fun loadTtsModelOnce() {
         if (ttsConfigLoaded) return
 
-        // Hard‑coded configuration – replace with your model folder / names
         val json = """
         {
-          "modelDir": "kitten-nano-en-v0_1-fp16",
-          "modelName": "model.fp16.onnx",
+          "modelDir": "kokoro-en-v0_19",
+          "modelName": "model.onnx",
           "voices": "voices.bin",
-          "dataDir": "kitten-nano-en-v0_1-fp16/espeak-ng-data",
+          "dataDir": "kokoro-en-v0_19/espeak-ng-data",
           "lang": "eng",
-          "isKitten": true
         }
         """.trimIndent()
 
         try {
             TtsEngine.loadFromJson(this, json)
+            ttsConfigLoaded = true
         } catch (e: RemoteException) {
             Log.e(TAG, "TTS load RPC failed", e)
-            false
         }
     }
 
@@ -377,19 +595,17 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        /* 1) start the service request */
         lifecycleScope.launch(Dispatchers.IO) {
             TtsEngine.generateAudio(text)
         }
 
-        /* 2) render the stream from the channel */
         lifecycleScope.launch(Dispatchers.IO) {
             ttsChannel = TtsEngine.samplesChannel
             if (ttsChannel != null){
                 for (samples in ttsChannel) {
                     audioTrack?.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
                 }
-                audioTrack?.stop()     // after the stream ends
+                audioTrack?.stop()
                 audioTrack?.release()
                 audioTrack = null
                 isPlaying = false
@@ -402,20 +618,32 @@ class MainActivity : ComponentActivity() {
 
     private fun initialiseAudioTrackIfNeeded() {
         if (audioTrack != null) return
+
         val sampleRate = TtsEngine.tts!!.sampleRate()
-        val bufLength = AudioTrack.getMinBufferSize(
-            sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT
+        val minBufSizeBytes = AudioTrack.getMinBufferSize(
+            sampleRate,
+            AudioFormat.CHANNEL_OUT_MONO,
+            AudioFormat.ENCODING_PCM_FLOAT
         )
-        Log.i(TAG, "sampleRate: $sampleRate, buffLength: $bufLength")
+        val minBufSizeFrames = minBufSizeBytes / 4
 
-        val attr = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .setUsage(AudioAttributes.USAGE_MEDIA).build()
+        val attr = AudioAttributes.Builder()
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .build()
 
-        val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setSampleRate(sampleRate).build()
+        val format = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+            .setSampleRate(sampleRate)
+            .build()
 
         audioTrack = AudioTrack(
-            attr, format, bufLength, AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE
+            attr,
+            format,
+            minBufSizeFrames,
+            AudioTrack.MODE_STREAM,
+            AudioManager.AUDIO_SESSION_ID_GENERATE
         ).apply { play() }
 
         isPlaying = true
@@ -424,7 +652,6 @@ class MainActivity : ComponentActivity() {
     private fun stopTts() {
         ttsChannel.cancel()
         audioTrack?.stop()
-        audioTrack?.flush()
         audioTrack?.release()
         audioTrack = null
         isPlaying = false

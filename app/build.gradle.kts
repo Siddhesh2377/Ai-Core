@@ -48,6 +48,7 @@ android {
 dependencies {
     implementation(project(":ai-core"))
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.material.icons)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.material3)
     implementation(libs.androidx.lifecycle.runtime.ktx)

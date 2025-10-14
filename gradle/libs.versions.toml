@@ -118,7 +118,7 @@ androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", versi
 androidx-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-material = { group = "com.google.android.material", name = "material", version.ref = "material" }
 
-androidx-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
+androidx-material-icons = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIconsExtended" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-ui = { group = "androidx.compose.ui", name = "ui" }                                      # Version via BOM
 androidx-ui-graphics = { group = "androidx.compose.ui", name = "ui-graphics" }                   # Version via BOM

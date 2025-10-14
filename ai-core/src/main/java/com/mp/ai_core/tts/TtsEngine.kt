@@ -138,12 +138,12 @@ object TtsEngine {
         // lang = "eng"
 
         // Example 9
-        // kokoro-en-v0_19
-        // modelDir = "kokoro-en-v0_19"
-        // modelName = "model.onnx"
-        // voices = "voices.bin"
-        // dataDir = "kokoro-en-v0_19/espeak-ng-data"
-        // lang = "eng"
+         //kokoro-en-v0_19
+         modelDir = "kokoro-en-v0_19"
+         modelName = "model.onnx"
+         voices = "voices.bin"
+         dataDir = "kokoro-en-v0_19/espeak-ng-data"
+         lang = "eng"
 
         // Example 10
         // kokoro-multi-lang-v1_0
@@ -161,12 +161,12 @@ object TtsEngine {
 
         // Example 11
         // kitten-nano-en-v0_1-fp16
-         modelDir = "kitten-nano-en-v0_1-fp16"
-         modelName = "model.fp16.onnx"
-         voices = "voices.bin"
-         dataDir = "kitten-nano-en-v0_1-fp16/espeak-ng-data"
-         lang = "eng"
-         isKitten = true
+//         modelDir = "kitten-nano-en-v0_1-fp16"
+//         modelName = "model.fp16.onnx"
+//         voices = "voices.bin"
+//         dataDir = "kitten-nano-en-v0_1-fp16/espeak-ng-data"
+//         lang = "eng"
+//         isKitten = true
     }
 
     fun createTts(context: Context) {
