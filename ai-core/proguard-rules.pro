@@ -1,2 +1,3 @@
 -keep class com.mp.ai_core.StreamCallback { *; }
 -keep class com.mp.ai_core.NativeLib { *; }
+-keepnames class com.mp.ai_core.tts.TtsConfig { *; }

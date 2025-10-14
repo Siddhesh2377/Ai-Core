@@ -8,6 +8,7 @@ import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
+import android.os.RemoteException
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -102,7 +103,21 @@ class TTSActivity : ComponentActivity() {
 
     private fun initializeTts() {
         Log.i(TAG, "Start to initialize TTS")
-        TtsEngine.createTts(this)
+        val json = """
+        {
+          "modelDir": "kokoro-en-v0_19",
+          "modelName": "model.onnx",
+          "voices": "voices.bin",
+          "dataDir": "kokoro-en-v0_19/espeak-ng-data",
+          "lang": "eng",
+        }
+        """.trimIndent()
+
+        try {
+            TtsEngine.loadFromJson(this, json)
+        } catch (e: RemoteException) {
+            Log.e(TAG, "TTS load RPC failed", e)
+        }
         Log.i(TAG, "Finish initializing TTS")
     }
 
