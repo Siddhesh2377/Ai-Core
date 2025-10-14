@@ -32,5 +32,12 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".TTSActivity"
+            android:exported="true"
+            android:label="@string/title_activity_main"
+            android:theme="@style/Theme.AiCore">
+        </activity>
+
     </application>
 </manifest>

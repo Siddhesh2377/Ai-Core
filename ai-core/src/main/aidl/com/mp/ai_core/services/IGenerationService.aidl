@@ -41,5 +41,4 @@ interface IGenerationService {
 
     /* ---------- metadata ---------- */
     String  getModelInfo();    // JSON meta string
-    /* (it is automatically called by the service – no callback needed) */
 }

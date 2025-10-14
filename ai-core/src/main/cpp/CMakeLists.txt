@@ -15,7 +15,7 @@ project("ai_core")
 #load local llama.cpp
 if(GGML_VULKAN)
     include_directories(${ANDROID_NDK}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include)
-    include_directories(/home/home/dev/LIBS/gpu/Vulkan-Headers/include)
+    include_directories(/home/home/dev/AI/includes/gpu/Vulkan-Headers/include)
 endif()
 include_directories(/home/home/dev/AI/llama.cpp/src)
 add_subdirectory(/home/home/dev/AI/llama.cpp build-llama)

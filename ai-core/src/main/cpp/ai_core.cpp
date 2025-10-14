@@ -408,7 +408,16 @@ Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv *env, jobject) {
             << ",\"eot\":" << llama_vocab_eot(vocab)
             << ",\"nl\":"  << llama_vocab_nl(vocab) << "},";
     }
-    oss << "\"system\":\"" << json_escape(llama_print_system_info()) << "\"";
+
+    // Get chat template from model metadata
+    const char *chat_template = llama_model_chat_template(g_model, nullptr);
+    if (chat_template && *chat_template != '\0') {
+        oss << R"("chat_template":")" << json_escape(chat_template) << "\",";
+    } else {
+        oss << "\"chat_template\":null,";
+    }
+
+    oss << R"("system":")" << json_escape(llama_print_system_info()) << "\"";
     oss << "}";
     const std::string out = oss.str();
     return env->NewStringUTF(out.c_str());
