@@ -335,7 +335,7 @@ Java_com_mp_ai_1core_NativeLib_nativeSetChatTemplate(JNIEnv *env, jobject, jstri
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetToolsJson(JNIEnv *env, jobject, jstring jtools) {
     g_tools_json = jstr_to_utf8(env, jtools); g_tools_enabled = !g_tools_json.empty();
-    LOGI("Tools json set (%zu bytes); enabled=%d", g_tools_json.size(), (int) g_tools_enabled);
+    LOGI("Tools json set (%zu bytes); \nenabled=%d, \ntool = %s", g_tools_json.size(), (int) g_tools_enabled, g_tools_json.c_str());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

@@ -22,6 +22,7 @@ interface IGenerationService {
     boolean generate(
         String prompt,
         int maxTokens,
+        String toolCallingJSON,
         IGenerationCallback callback
     );
 

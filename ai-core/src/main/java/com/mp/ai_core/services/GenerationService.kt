@@ -62,11 +62,12 @@ class GenerationService : Service() {
         override fun generate(
             prompt: String,
             maxTokens: Int,
+            toolCallingJson: String,
             callback: IGenerationCallback
         ): Boolean {
             svcScope.launch {
                 try {
-                    lib.nativeGenerateStream(prompt, maxTokens, internalCallback(callback))
+                    lib.generateStreaming(prompt, maxTokens, callback, toolCallingJson)
                 } catch (t: Throwable) {
                     Log.e(TAG, "nativeGenerateStream error", t)
                     callback.onError("Native error: ${t.localizedMessage}")

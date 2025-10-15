@@ -2,6 +2,7 @@ package com.mp.ai_core
 
 import android.util.Log
 import androidx.annotation.Keep
+import com.mp.ai_core.services.IGenerationCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
@@ -149,93 +150,103 @@ class NativeLib private constructor(private val instanceId: String) {
 
     fun setSystemPrompt(prompt: String) = nativeSetSystemPrompt(prompt)
 
-    fun generateStreaming(
+    suspend fun generateStreaming(
         prompt: String,
         maxTokens: Int = 512,
-        uiScope: CoroutineScope,
-        onStart: () -> Unit,
-        onGenerate: (String) -> Unit,
-        onError: (String) -> Unit,
-        onDone: () -> Unit,
-        toolsJson: String? = null,
-        onToolCall: (name: String, argsJson: String) -> Unit = { _, _ -> }
-    ): Job {
+        callback: IGenerationCallback,
+        toolsJson: String = "",
+    ) {
         // Guard: model present?
         val modelInfo = runCatching { nativeGetModelInfo() }.getOrNull()
         if (modelInfo.isNullOrEmpty()) {
             val err = "No model loaded. Please call initModel() first."
             Log.e(TAG, err)
-            onError(err)
-            return SupervisorJob().apply { complete() }
+            callback.onError(err)
+            return
         }
+
         // Enable/disable tools for this turn
-        if (toolsJson != null) nativeSetToolsJson(toolsJson) else nativeSetToolsJson("")
+        if (toolsJson.isNotEmpty()) nativeSetToolsJson(toolsJson) else nativeSetToolsJson("")
+
         val tokenCh = Channel<String>(capacity = 256)
         val batchPeriodMs = 35L
-        val batcherJob = uiScope.launch(Dispatchers.Default) {
-            val sb = StringBuilder()
-            var lastFlush = System.nanoTime()
-            fun flush(force: Boolean = false) {
-                if (sb.isNotEmpty() && (force || (System.nanoTime() - lastFlush) / 1_000_000 >= batchPeriodMs)) {
-                    val chunk = sb.toString()
-                    sb.setLength(0)
-                    lastFlush = System.nanoTime()
-                    uiScope.launch(Dispatchers.Main.immediate) {
-                        val cleanToken = chunk
-                            .replace("[PAD]", "")
-                            .replace(Regex("\\[unused\\d+]"), "")
-                        if(cleanToken.isNotEmpty()) uiScope.launch(Dispatchers.Main) { onGenerate(cleanToken) }
+
+        coroutineScope {
+            val batcherJob = launch(Dispatchers.Default) {
+                val sb = StringBuilder()
+                var lastFlush = System.nanoTime()
+
+                fun flush(force: Boolean = false) {
+                    if (sb.isNotEmpty() && (force || (System.nanoTime() - lastFlush) / 1_000_000 >= batchPeriodMs)) {
+                        val chunk = sb.toString()
+                        sb.setLength(0)
+                        lastFlush = System.nanoTime()
+
+                        launch(Dispatchers.Main.immediate) {
+                            val cleanToken = chunk
+                                .replace("[PAD]", "")
+                                .replace(Regex("\\[unused\\d+]"), "")
+                            if (cleanToken.isNotEmpty()) {
+                                launch(Dispatchers.Main) {
+                                    callback.onToken(cleanToken)
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            try {
-                for (tok in tokenCh) {
-                    sb.append(tok)
-                    flush(false)
-                }
-            } finally {
-                flush(true)
-            }
-        }
-        val cb = object : StreamCallback {
-            override fun onToken(token: String) {
-                if (!tokenCh.trySend(token).isSuccess) {
-                    Log.w(TAG, "Token dropped due to backpressure")
+
+                try {
+                    for (tok in tokenCh) {
+                        sb.append(tok)
+                        flush(false)
+                    }
+                } finally {
+                    flush(true)
                 }
             }
-            override fun onToolCall(name: String, argsJson: String) {
-                uiScope.launch(Dispatchers.Main.immediate) {
-                    onToolCall(name, argsJson)
+
+            val cb = object : StreamCallback {
+                override fun onToken(token: String) {
+                    if (!tokenCh.trySend(token).isSuccess) {
+                        Log.w(TAG, "Token dropped due to backpressure")
+                    }
+                }
+
+                override fun onToolCall(name: String, argsJson: String) {
+                    launch(Dispatchers.Main.immediate) {
+                        callback.onToolCall(name, argsJson)
+                    }
+                }
+
+                override fun onDone() {
+                    tokenCh.close()
+                }
+
+                override fun onError(message: String) {
+                    launch(Dispatchers.Main.immediate) { onError(message) }
+                    tokenCh.close()
                 }
             }
-            override fun onDone() { tokenCh.close() }
-            override fun onError(message: String) {
-                uiScope.launch(Dispatchers.Main.immediate) { onError(message) }
-                tokenCh.close()
-            }
-        }
-        onStart()
-        val parentJob = uiScope.launch(Dispatchers.IO) {
-            try {
-                val success = nativeGenerateStream(prompt, maxTokens, cb)
-                if (!success) {
-                    throw IllegalStateException("nativeGenerateStream returned false")
+
+            val parentJob = launch(Dispatchers.IO) {
+                try {
+                    val success = nativeGenerateStream(prompt, maxTokens, cb)
+                    if (!success) {
+                        throw IllegalStateException("nativeGenerateStream returned false")
+                    }
+                } catch (t: Throwable) {
+                    Log.e(TAG, "nativeGenerateStream error", t)
+                    withContext(Dispatchers.Main.immediate) { callback.onError(t.message ?: "Native error") }
+                } finally {
+                    tokenCh.close()
                 }
-            } catch (t: Throwable) {
-                Log.e(TAG, "nativeGenerateStream error", t)
-                withContext(Dispatchers.Main.immediate) { onError(t.message ?: "Native error") }
-            } finally {
-                tokenCh.close()
             }
-        }
-        parentJob.invokeOnCompletion {
+
+            parentJob.join()
             batcherJob.cancel()
-            uiScope.launch {
-                batcherJob.join()
-                withContext(Dispatchers.Main.immediate) { onDone() }
-            }
+            batcherJob.join()
+            withContext(Dispatchers.Main.immediate) { callback.onDone() }
         }
-        return parentJob
     }
 
 }
