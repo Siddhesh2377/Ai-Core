@@ -39,5 +39,12 @@
             android:theme="@style/Theme.AiCore">
         </activity>
 
+        <activity
+            android:name=".TempActivity"
+            android:exported="true"
+            android:label="@string/title_activity_main"
+            android:theme="@style/Theme.AiCore">
+        </activity>
+
     </application>
 </manifest>

@@ -14,39 +14,43 @@
 
 #include "llama.h"
 #include "cpu_helper.h"
+#include <llama-mmap.h>
+#include "llama-io.h"
 
 #if defined(__ANDROID__)
+
 #include <android/log.h>
+
 #define LOG_TAG "ai_core"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 #else
 #define LOGI(...)
-  #define LOGE(...)
+#define LOGE(...)
 #endif
 
 // -----------------------------------------------------------------------------
 // Globals
 // -----------------------------------------------------------------------------
-static llama_model   *g_model           = nullptr;
-static llama_context *g_ctx             = nullptr;
-static llama_sampler *g_sampler         = nullptr;   // main chain
+static llama_model *g_model = nullptr;
+static llama_context *g_ctx = nullptr;
+static llama_sampler *g_sampler = nullptr;   // main chain
 static llama_sampler *g_sampler_grammar = nullptr;   // optional grammar sampler (front of chain)
 
-static std::string    g_system_prompt = "You are a helpful assistant.";
-static std::string    g_chat_template_override;
+static std::string g_system_prompt = "You are a helpful assistant.";
+static std::string g_chat_template_override;
 static std::atomic<bool> g_stop_requested(false);
 
 // Tools
 static std::string g_tools_json;  // OpenAI-style tools array
-static bool        g_tools_enabled = false;
+static bool g_tools_enabled = false;
 
 // Runtime params (saved at init so we rebuild chains consistently)
-static int   g_ctx_size   = 2048;
-static int   g_n_batch    = 256;
-static int   g_init_top_k = 20;
+static int g_ctx_size = 2048;
+static int g_n_batch = 256;
+static int g_init_top_k = 20;
 static float g_init_top_p = 0.9f;
-static float g_init_temp  = 0.7f;
+static float g_init_temp = 0.7f;
 static float g_init_min_p = 0.0f;
 
 // Carry buffer for streaming UTF-8 that may be split mid-codepoint.
@@ -54,8 +58,8 @@ static thread_local std::string g_utf8_carry;
 
 // Tool-call streaming accumulator
 static std::string g_tool_accum;
-static int  g_brace_depth   = 0;
-static bool g_in_tool_json  = false;
+static int g_brace_depth = 0;
+static bool g_in_tool_json = false;
 
 // -----------------------------------------------------------------------------
 // UTF helpers (UTF-16 <-> UTF-8, streaming-safe)
@@ -76,33 +80,67 @@ static inline bool decode_one_utf8(const std::string &s, size_t &i, uint32_t &cp
     unsigned char b0 = (unsigned char) s[i];
     size_t rem = s.size() - i;
 
-    if (b0 < 0x80) { cp = b0; i += 1; return true; }
+    if (b0 < 0x80) {
+        cp = b0;
+        i += 1;
+        return true;
+    }
     if ((b0 >> 5) == 0x6) {
         if (rem < 2) return false;
         unsigned char b1 = (unsigned char) s[i + 1];
-        if ((b1 & 0xC0) != 0x80) { i++; cp = 0xFFFDu; return true; }
-        cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F); i += 2; return true;
+        if ((b1 & 0xC0) != 0x80) {
+            i++;
+            cp = 0xFFFDu;
+            return true;
+        }
+        cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+        i += 2;
+        return true;
     }
     if ((b0 >> 4) == 0xE) {
         if (rem < 3) return false;
         unsigned char b1 = (unsigned char) s[i + 1], b2 = (unsigned char) s[i + 2];
-        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) { i++; cp = 0xFFFDu; return true; }
-        cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F); i += 3; return true;
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80) {
+            i++;
+            cp = 0xFFFDu;
+            return true;
+        }
+        cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+        i += 3;
+        return true;
     }
     if ((b0 >> 3) == 0x1E) {
         if (rem < 4) return false;
-        unsigned char b1 = (unsigned char) s[i + 1], b2 = (unsigned char) s[i + 2], b3 = (unsigned char) s[i + 3];
-        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) { i++; cp = 0xFFFDu; return true; }
-        cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F); i += 4; return true;
+        unsigned char b1 = (unsigned char) s[i + 1], b2 = (unsigned char) s[i +
+                                                                            2], b3 = (unsigned char) s[
+                i + 3];
+        if ((b1 & 0xC0) != 0x80 || (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80) {
+            i++;
+            cp = 0xFFFDu;
+            return true;
+        }
+        cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+        i += 4;
+        return true;
     }
-    i++; cp = 0xFFFDu; return true;
+    i++;
+    cp = 0xFFFDu;
+    return true;
 }
 
-static void utf8_to_utf16_with_carry(const std::string &in, std::u16string &out, std::string &carry) {
-    std::string s = carry + in; carry.clear(); size_t i = 0;
+static void
+utf8_to_utf16_with_carry(const std::string &in, std::u16string &out, std::string &carry) {
+    std::string s = carry + in;
+    carry.clear();
+    size_t i = 0;
     while (i < s.size()) {
-        size_t before = i; uint32_t cp = 0; bool ok = decode_one_utf8(s, i, cp);
-        if (!ok) { carry.assign(s.begin() + before, s.end()); break; }
+        size_t before = i;
+        uint32_t cp = 0;
+        bool ok = decode_one_utf8(s, i, cp);
+        if (!ok) {
+            carry.assign(s.begin() + before, s.end());
+            break;
+        }
         push_u16(out, cp);
     }
 }
@@ -111,21 +149,34 @@ static std::string jstr_to_utf8(JNIEnv *env, jstring js) {
     if (!js) return {};
     jsize n = env->GetStringLength(js);
     const jchar *p = env->GetStringChars(js, nullptr); // UTF-16
-    std::string out; out.reserve((size_t) n);
+    std::string out;
+    out.reserve((size_t) n);
     for (jsize i = 0; i < n;) {
-        uint32_t cp; uint16_t w1 = p[i++];
+        uint32_t cp;
+        uint16_t w1 = p[i++];
         if (w1 >= 0xD800 && w1 <= 0xDBFF && i < n) {
             uint16_t w2 = p[i];
-            if (w2 >= 0xDC00 && w2 <= 0xDFFF) { ++i; cp = 0x10000u + (((w1 - 0xD800u) << 10) | (w2 - 0xDC00u)); }
+            if (w2 >= 0xDC00 && w2 <= 0xDFFF) {
+                ++i;
+                cp = 0x10000u + (((w1 - 0xD800u) << 10) | (w2 - 0xDC00u));
+            }
             else cp = 0xFFFDu;
         } else if (w1 >= 0xDC00 && w1 <= 0xDFFF) { cp = 0xFFFDu; }
         else { cp = w1; }
         if (cp < 0x80) out.push_back((char) cp);
-        else if (cp < 0x800) { out.push_back((char) (0xC0 | (cp >> 6))); out.push_back((char) (0x80 | (cp & 0x3F))); }
+        else if (cp < 0x800) {
+            out.push_back((char) (0xC0 | (cp >> 6)));
+            out.push_back((char) (0x80 | (cp & 0x3F)));
+        }
         else if (cp < 0x10000) {
-            out.push_back((char) (0xE0 | (cp >> 12))); out.push_back((char) (0x80 | ((cp >> 6) & 0x3F))); out.push_back((char) (0x80 | (cp & 0x3F)));
+            out.push_back((char) (0xE0 | (cp >> 12)));
+            out.push_back((char) (0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back((char) (0x80 | (cp & 0x3F)));
         } else {
-            out.push_back((char) (0xF0 | (cp >> 18))); out.push_back((char) (0x80 | ((cp >> 12) & 0x3F))); out.push_back((char) (0x80 | ((cp >> 6) & 0x3F))); out.push_back((char) (0x80 | (cp & 0x3F)));
+            out.push_back((char) (0xF0 | (cp >> 18)));
+            out.push_back((char) (0x80 | ((cp >> 12) & 0x3F)));
+            out.push_back((char) (0x80 | ((cp >> 6) & 0x3F)));
+            out.push_back((char) (0x80 | (cp & 0x3F)));
         }
     }
     env->ReleaseStringChars(js, p);
@@ -133,18 +184,32 @@ static std::string jstr_to_utf8(JNIEnv *env, jstring js) {
 }
 
 static jstring utf8_to_jstring(JNIEnv *env, const std::string &utf8, std::string &carry) {
-    std::u16string u16; utf8_to_utf16_with_carry(utf8, u16, carry);
+    std::u16string u16;
+    utf8_to_utf16_with_carry(utf8, u16, carry);
     if (u16.empty()) return nullptr;
     return env->NewString(reinterpret_cast<const jchar *>(u16.data()), (jsize) u16.size());
 }
 
 static void flush_utf8_carry(JNIEnv *env, jobject cb) {
     if (g_utf8_carry.empty()) return;
-    std::string tmp = g_utf8_carry; tmp.append("\xEF\xBF\xBD", 3); // U+FFFD
-    jclass cls = env->GetObjectClass(cb); if (!cls) { g_utf8_carry.clear(); return; }
-    jmethodID mid = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V"); if (!mid) { g_utf8_carry.clear(); return; }
-    std::string dummy; jstring jtok = utf8_to_jstring(env, tmp, dummy);
-    if (jtok) { env->CallVoidMethod(cb, mid, jtok); env->DeleteLocalRef(jtok); }
+    std::string tmp = g_utf8_carry;
+    tmp.append("\xEF\xBF\xBD", 3); // U+FFFD
+    jclass cls = env->GetObjectClass(cb);
+    if (!cls) {
+        g_utf8_carry.clear();
+        return;
+    }
+    jmethodID mid = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V");
+    if (!mid) {
+        g_utf8_carry.clear();
+        return;
+    }
+    std::string dummy;
+    jstring jtok = utf8_to_jstring(env, tmp, dummy);
+    if (jtok) {
+        env->CallVoidMethod(cb, mid, jtok);
+        env->DeleteLocalRef(jtok);
+    }
     g_utf8_carry.clear();
 }
 
@@ -152,38 +217,79 @@ static void flush_utf8_carry(JNIEnv *env, jobject cb) {
 // Small JSON utils
 // -----------------------------------------------------------------------------
 static std::string json_escape(const std::string &s) {
-    std::ostringstream o; for (auto c: s) {
-        switch (c) { case '\\': o << "\\\\"; break; case '"': o << "\\\""; break; case '\n': o << "\\n"; break; case '\r': o << "\\r"; break; case '\t': o << "\\t"; break; default: o << c; break; }
-    } return o.str();
+    std::ostringstream o;
+    for (auto c: s) {
+        switch (c) {
+            case '\\':
+                o << "\\\\";
+                break;
+            case '"':
+                o << "\\\"";
+                break;
+            case '\n':
+                o << "\\n";
+                break;
+            case '\r':
+                o << "\\r";
+                break;
+            case '\t':
+                o << "\\t";
+                break;
+            default:
+                o << c;
+                break;
+        }
+    }
+    return o.str();
 }
 
 // -----------------------------------------------------------------------------
 // Kotlin callback helpers (add onToolCall)
 // -----------------------------------------------------------------------------
 static void jni_on_error(JNIEnv *env, jobject cb, const char *msg) {
-    jclass cls = env->GetObjectClass(cb); if (!cls) return;
-    jmethodID mid = env->GetMethodID(cls, "onError", "(Ljava/lang/String;)V"); if (!mid) return;
-    std::string dummy; jstring jmsg = utf8_to_jstring(env, std::string(msg ? msg : "error"), dummy); if (!jmsg) jmsg = env->NewStringUTF("error");
-    env->CallVoidMethod(cb, mid, jmsg); env->DeleteLocalRef(jmsg);
+    jclass cls = env->GetObjectClass(cb);
+    if (!cls) return;
+    jmethodID mid = env->GetMethodID(cls, "onError", "(Ljava/lang/String;)V");
+    if (!mid) return;
+    std::string dummy;
+    jstring jmsg = utf8_to_jstring(env, std::string(msg ? msg : "error"), dummy);
+    if (!jmsg) jmsg = env->NewStringUTF("error");
+    env->CallVoidMethod(cb, mid, jmsg);
+    env->DeleteLocalRef(jmsg);
 }
 
 static void jni_on_token(JNIEnv *env, jobject cb, const std::string &s) {
-    jclass cls = env->GetObjectClass(cb); if (!cls) return;
-    jmethodID mid = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V"); if (!mid) return;
-    jstring jtok = utf8_to_jstring(env, s, g_utf8_carry); if (jtok) { env->CallVoidMethod(cb, mid, jtok); env->DeleteLocalRef(jtok); }
+    jclass cls = env->GetObjectClass(cb);
+    if (!cls) return;
+    jmethodID mid = env->GetMethodID(cls, "onToken", "(Ljava/lang/String;)V");
+    if (!mid) return;
+    jstring jtok = utf8_to_jstring(env, s, g_utf8_carry);
+    if (jtok) {
+        env->CallVoidMethod(cb, mid, jtok);
+        env->DeleteLocalRef(jtok);
+    }
 }
 
-static void jni_on_toolcall(JNIEnv *env, jobject cb, const std::string &name, const std::string &payloadUtf8) {
-    jclass cls = env->GetObjectClass(cb); if (!cls) return;
-    jmethodID mid = env->GetMethodID(cls, "onToolCall", "(Ljava/lang/String;Ljava/lang/String;)V"); if (!mid) return;
+static void
+jni_on_toolcall(JNIEnv *env, jobject cb, const std::string &name, const std::string &payloadUtf8) {
+    jclass cls = env->GetObjectClass(cb);
+    if (!cls) return;
+    jmethodID mid = env->GetMethodID(cls, "onToolCall", "(Ljava/lang/String;Ljava/lang/String;)V");
+    if (!mid) return;
     jstring jname = env->NewStringUTF(name.c_str());
-    std::string dummy; jstring jpayload = utf8_to_jstring(env, payloadUtf8, dummy); if (!jpayload) jpayload = env->NewStringUTF(payloadUtf8.c_str());
-    env->CallVoidMethod(cb, mid, jname, jpayload); env->DeleteLocalRef(jname); env->DeleteLocalRef(jpayload);
+    std::string dummy;
+    jstring jpayload = utf8_to_jstring(env, payloadUtf8, dummy);
+    if (!jpayload) jpayload = env->NewStringUTF(payloadUtf8.c_str());
+    env->CallVoidMethod(cb, mid, jname, jpayload);
+    env->DeleteLocalRef(jname);
+    env->DeleteLocalRef(jpayload);
 }
 
 static void jni_on_done(JNIEnv *env, jobject cb) {
-    jclass cls = env->GetObjectClass(cb); if (!cls) return;
-    jmethodID mid = env->GetMethodID(cls, "onDone", "()V"); if (!mid) return;
+    jclass cls = env->GetObjectClass(cb);
+    if (!cls) return;
+    jmethodID mid = env->GetMethodID(cls, "onDone", "()V");
+    if (!mid) return;
     env->CallVoidMethod(cb, mid);
 }
 
@@ -191,28 +297,48 @@ static void jni_on_done(JNIEnv *env, jobject cb) {
 // Resource management
 // -----------------------------------------------------------------------------
 static void free_everything() {
-    if (g_sampler_grammar) { llama_sampler_free(g_sampler_grammar); g_sampler_grammar = nullptr; }
-    if (g_sampler)         { llama_sampler_free(g_sampler);         g_sampler         = nullptr; }
-    if (g_ctx)             { llama_free(g_ctx);                     g_ctx             = nullptr; }
-    if (g_model)           { llama_model_free(g_model);             g_model           = nullptr; }
+    if (g_sampler_grammar) {
+        llama_sampler_free(g_sampler_grammar);
+        g_sampler_grammar = nullptr;
+    }
+    if (g_sampler) {
+        llama_sampler_free(g_sampler);
+        g_sampler = nullptr;
+    }
+    if (g_ctx) {
+        llama_free(g_ctx);
+        g_ctx = nullptr;
+    }
+    if (g_model) {
+        llama_model_free(g_model);
+        g_model = nullptr;
+    }
     llama_backend_free();
 }
 
-extern "C" JNIEXPORT void JNICALL Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv *, jobject) {
-    g_stop_requested = true; LOGI("Stop generation requested");
+extern "C" JNIEXPORT void JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv *, jobject) {
+    g_stop_requested = true;
+    LOGI("Stop generation requested");
 }
 
 // -----------------------------------------------------------------------------
 // Tools helpers
 // -----------------------------------------------------------------------------
 static std::vector<std::string> extract_tool_names(const std::string &tools_json) {
-    std::vector<std::string> out; size_t pos = 0;
+    std::vector<std::string> out;
+    size_t pos = 0;
     while (true) {
-        size_t k = tools_json.find("\"name\"", pos); if (k == std::string::npos) break;
-        size_t colon = tools_json.find(':', k); if (colon == std::string::npos) break;
-        size_t q1 = tools_json.find('"', colon + 1); if (q1 == std::string::npos) break;
-        size_t q2 = tools_json.find('"', q1 + 1); if (q2 == std::string::npos) break;
-        std::string name = tools_json.substr(q1 + 1, q2 - q1 - 1); if (!name.empty()) out.push_back(name);
+        size_t k = tools_json.find("\"name\"", pos);
+        if (k == std::string::npos) break;
+        size_t colon = tools_json.find(':', k);
+        if (colon == std::string::npos) break;
+        size_t q1 = tools_json.find('"', colon + 1);
+        if (q1 == std::string::npos) break;
+        size_t q2 = tools_json.find('"', q1 + 1);
+        if (q2 == std::string::npos) break;
+        std::string name = tools_json.substr(q1 + 1, q2 - q1 - 1);
+        if (!name.empty()) out.push_back(name);
         pos = q2 + 1;
     }
     return out;
@@ -228,7 +354,10 @@ call         ::= "{" ws "\"name\"" ws ":" ws toolname ws "," ws "\"arguments\"" 
 )";
     g << "toolname     ::= ";
     if (!names.empty()) {
-        for (size_t i = 0; i < names.size(); ++i) { if (i) g << " | "; g << "\"\\\"" << names[i] << "\\\"\""; }
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i) g << " | ";
+            g << "\"\\\"" << names[i] << "\\\"\"";
+        }
     } else { g << "\"\\\"unknown\\\"\""; }
     g << "\n";
     g << R"(
@@ -257,7 +386,12 @@ static bool maybe_collect_tool_json_chunk(const std::string &piece) {
     if (!g_tools_enabled) return false;
     for (char c: piece) {
         if (!g_in_tool_json) {
-            if (c == '{') { g_in_tool_json = true; g_brace_depth = 1; g_tool_accum.clear(); g_tool_accum.push_back(c); }
+            if (c == '{') {
+                g_in_tool_json = true;
+                g_brace_depth = 1;
+                g_tool_accum.clear();
+                g_tool_accum.push_back(c);
+            }
         } else {
             g_tool_accum.push_back(c);
             if (c == '{') ++g_brace_depth; else if (c == '}') --g_brace_depth;
@@ -268,55 +402,73 @@ static bool maybe_collect_tool_json_chunk(const std::string &piece) {
 }
 
 static void rebuild_sampler_chain(bool with_grammar_first) {
-    if (g_sampler) { llama_sampler_free(g_sampler); g_sampler = nullptr; }
+    if (g_sampler) {
+        llama_sampler_free(g_sampler);
+        g_sampler = nullptr;
+    }
     llama_sampler_chain_params sp = llama_sampler_chain_default_params();
     llama_sampler *chain = llama_sampler_chain_init(sp);
     if (with_grammar_first && g_sampler_grammar) llama_sampler_chain_add(chain, g_sampler_grammar);
     llama_sampler_chain_add(chain, llama_sampler_init_top_k(g_init_top_k));
-    if (g_init_top_p < 1.0f) llama_sampler_chain_add(chain, llama_sampler_init_top_p(g_init_top_p, 1));
-    if (g_init_temp  != 1.0f) llama_sampler_chain_add(chain, llama_sampler_init_temp(g_init_temp));
-    if (g_init_temp  >  0.0f) llama_sampler_chain_add(chain, llama_sampler_init_dist(-1));
-    if (g_init_min_p >  0.0f) llama_sampler_chain_add(chain, llama_sampler_init_min_p(g_init_min_p, 1));
-    g_sampler = chain; llama_sampler_reset(g_sampler);
+    if (g_init_top_p < 1.0f)
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(g_init_top_p, 1));
+    if (g_init_temp != 1.0f) llama_sampler_chain_add(chain, llama_sampler_init_temp(g_init_temp));
+    if (g_init_temp > 0.0f) llama_sampler_chain_add(chain, llama_sampler_init_dist(-1));
+    if (g_init_min_p > 0.0f)
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(g_init_min_p, 1));
+    g_sampler = chain;
+    llama_sampler_reset(g_sampler);
 }
 
 static bool enable_tool_grammar_if_needed() {
     if (!g_tools_enabled) return false;
     LOGI("TOOLS JSON set (%zu bytes)", g_tools_json.size());
     const std::string gbnf = build_toolcall_gbnf(g_tools_json);
-    if (g_sampler_grammar) { llama_sampler_free(g_sampler_grammar); g_sampler_grammar = nullptr; }
+    if (g_sampler_grammar) {
+        llama_sampler_free(g_sampler_grammar);
+        g_sampler_grammar = nullptr;
+    }
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
     g_sampler_grammar = llama_sampler_init_grammar(vocab, gbnf.c_str(), "root");
-    if (!g_sampler_grammar) { LOGE("grammar init failed"); return false; }
+    if (!g_sampler_grammar) {
+        LOGE("grammar init failed");
+        return false;
+    }
     rebuild_sampler_chain(/*with_grammar_first=*/true);
     LOGI("Tool grammar enabled");
     return true;
 }
 
 // Feed tokens in chunks <= g_n_batch; return false on decode error
-static bool decode_tokens_chunked(llama_context *ctx, const std::vector<llama_token> &toks,
-                                  int32_t start_pos, int32_t n_batch, JNIEnv *env, jobject jcb) {
+static bool
+decode_tokens_chunked(llama_context *ctx, const std::vector<llama_token> &toks, int32_t start_pos,
+                      int32_t n_batch, JNIEnv *env, jobject jcb) {
     if (toks.empty()) return true;
     llama_batch batch = llama_batch_init(n_batch, /*embd*/0, /*n_seq_max*/1);
-    int32_t pos = start_pos; size_t i = 0;
+    int32_t pos = start_pos;
+    size_t i = 0;
     while (i < toks.size()) {
         const int32_t take = (int32_t) std::min<size_t>(n_batch, toks.size() - i);
         batch.n_tokens = take;
         for (int32_t t = 0; t < take; ++t) {
-            batch.token[t]   = toks[i + t];
-            batch.pos[t]     = pos + t;
-            batch.n_seq_id[t]= 1; batch.seq_id[t][0] = 0; batch.logits[t] = (t == take - 1);
+            batch.token[t] = toks[i + t];
+            batch.pos[t] = pos + t;
+            batch.n_seq_id[t] = 1;
+            batch.seq_id[t][0] = 0;
+            batch.logits[t] = (t == take - 1);
         }
         int rc = llama_decode(ctx, batch);
         if (rc != 0) {
             llama_batch_free(batch);
             if (rc == 1) jni_on_error(env, jcb, "decode failed: no KV slot (context overflow)");
-            else          jni_on_error(env, jcb, "decode() failed on prompt chunk");
+            else jni_on_error(env, jcb, "decode() failed on prompt chunk");
             return false;
         }
-        pos += take; i += (size_t) take;
+        pos += take;
+        i += (size_t) take;
     }
-    llama_batch_free(batch); return true;
+    llama_batch_free(batch);
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -324,22 +476,29 @@ static bool decode_tokens_chunked(llama_context *ctx, const std::vector<llama_to
 // -----------------------------------------------------------------------------
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetSystemPrompt(JNIEnv *env, jobject, jstring jprompt) {
-    g_system_prompt = jstr_to_utf8(env, jprompt); LOGI("System prompt updated (%zu bytes)", g_system_prompt.size());
+    g_system_prompt = jstr_to_utf8(env, jprompt);
+    LOGI("System prompt updated (%zu bytes)", g_system_prompt.size());
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetChatTemplate(JNIEnv *env, jobject, jstring jtemplate) {
-    g_chat_template_override = jstr_to_utf8(env, jtemplate); LOGI("Chat template override set (%zu bytes)", g_chat_template_override.size());
+    g_chat_template_override = jstr_to_utf8(env, jtemplate);
+    LOGI("Chat template override set (%zu bytes)", g_chat_template_override.size());
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetToolsJson(JNIEnv *env, jobject, jstring jtools) {
-    g_tools_json = jstr_to_utf8(env, jtools); g_tools_enabled = !g_tools_json.empty();
-    LOGI("Tools json set (%zu bytes); \nenabled=%d, \ntool = %s", g_tools_json.size(), (int) g_tools_enabled, g_tools_json.c_str());
+    g_tools_json = jstr_to_utf8(env, jtools);
+    g_tools_enabled = !g_tools_json.empty();
+    LOGI("Tools json set (%zu bytes); \nenabled=%d, \ntool = %s", g_tools_json.size(),
+         (int) g_tools_enabled, g_tools_json.c_str());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_NativeLib_nativeRelease(JNIEnv *, jobject) { free_everything(); return JNI_TRUE; }
+Java_com_mp_ai_1core_NativeLib_nativeRelease(JNIEnv *, jobject) {
+    free_everything();
+    return JNI_TRUE;
+}
 
 static std::mutex g_init_mtx;
 
@@ -351,40 +510,74 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, j
     std::lock_guard<std::mutex> _lock(g_init_mtx);
 
     const std::string path = jstr_to_utf8(env, jpath);
-    free_everything(); llama_backend_init();
+    free_everything();
+    llama_backend_init();
 
     const int physCores = count_physical_cores();
 
-    int gpu_layers = gpuLayers; if (gpu_layers < 0) gpu_layers = 10; if (gpu_layers > 16) gpu_layers = 16;
+    int gpu_layers = gpuLayers;
+    if (gpu_layers < 0) gpu_layers = 10;
+    if (gpu_layers > 16) gpu_layers = 16;
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = gpu_layers; mparams.use_mmap = useMMAP; mparams.use_mlock = false; mparams.check_tensors = true;
+    mparams.n_gpu_layers = gpu_layers;
+    mparams.use_mmap = useMMAP;
+    mparams.use_mlock = false;
+    mparams.check_tensors = true;
     g_model = llama_model_load_from_file(path.c_str(), mparams);
-    if (!g_model) { LOGE("Failed to load model: %s", path.c_str()); free_everything(); return JNI_FALSE; }
+    if (!g_model) {
+        LOGE("Failed to load model: %s", path.c_str());
+        free_everything();
+        return JNI_FALSE;
+    }
 
     llama_context_params cparams = llama_context_default_params();
-    cparams.n_ctx = ctxSize; cparams.n_batch = 256; cparams.n_ubatch = 64; cparams.offload_kqv = false; cparams.n_seq_max = 1;
-    cparams.n_threads = jthreads > 0 ? jthreads : physCores; cparams.n_threads_batch = cparams.n_threads; cparams.no_perf = true;
+    cparams.n_ctx = ctxSize;
+    cparams.n_batch = 256;
+    cparams.n_ubatch = 64;
+    cparams.offload_kqv = false;
+    cparams.n_seq_max = 1;
+    cparams.n_threads = jthreads > 0 ? jthreads : physCores;
+    cparams.n_threads_batch = cparams.n_threads;
+    cparams.no_perf = true;
     g_ctx = llama_init_from_model(g_model, cparams);
-    if (!g_ctx) { LOGE("Failed to create context"); free_everything(); return JNI_FALSE; }
+    if (!g_ctx) {
+        LOGE("Failed to create context");
+        free_everything();
+        return JNI_FALSE;
+    }
 
     // Persist runtime knobs
-    g_ctx_size   = ctxSize; g_n_batch = cparams.n_batch;
-    g_init_top_k = topK;    g_init_top_p = topP; g_init_temp = temp; g_init_min_p = minP;
+    g_ctx_size = ctxSize;
+    g_n_batch = cparams.n_batch;
+    g_init_top_k = topK;
+    g_init_top_p = topP;
+    g_init_temp = temp;
+    g_init_min_p = minP;
 
     // Warm-up single token
     {
         const llama_vocab *vocab = llama_model_get_vocab(g_model);
-        llama_token sp[4]; int nsp = llama_tokenize(vocab, " ", 1, sp, 4, true, true);
+        llama_token sp[4];
+        int nsp = llama_tokenize(vocab, " ", 1, sp, 4, true, true);
         llama_batch warm = llama_batch_init(1, 0, 1);
-        if (nsp > 0) { warm.n_tokens = 1; warm.token[0] = sp[0]; warm.pos[0] = 0; warm.n_seq_id[0] = 1; warm.seq_id[0][0] = 0; warm.logits[0] = true; (void) llama_decode(g_ctx, warm); }
+        if (nsp > 0) {
+            warm.n_tokens = 1;
+            warm.token[0] = sp[0];
+            warm.pos[0] = 0;
+            warm.n_seq_id[0] = 1;
+            warm.seq_id[0][0] = 0;
+            warm.logits[0] = true;
+            (void) llama_decode(g_ctx, warm);
+        }
         llama_batch_free(warm);
     }
 
     // Initial sampler chain
     rebuild_sampler_chain(/*with_grammar_first=*/false);
 
-    LOGI("Model initialized (gpu_layers=%d, n_batch=%d, n_ubatch=%d)", gpu_layers, cparams.n_batch, cparams.n_ubatch);
+    LOGI("Model initialized (gpu_layers=%d, n_batch=%d, n_ubatch=%d)", gpu_layers, cparams.n_batch,
+         cparams.n_ubatch);
     return JNI_TRUE;
 }
 
@@ -394,19 +587,15 @@ Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv *env, jobject) {
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
     std::ostringstream oss;
     oss << "{";
-    oss << "\"core\":"
-        << "{" << "\"n_vocab\":" << (vocab ? llama_vocab_n_tokens(vocab) : 0)
-        << ",\"n_ctx_train\":" << llama_model_n_ctx_train(g_model)
-        << ",\"n_embd\":"     << llama_model_n_embd(g_model)
-        << ",\"n_layer\":"    << llama_model_n_layer(g_model)
-        << ",\"n_head\":"     << llama_model_n_head(g_model)
-        << ",\"n_head_kv\":"  << llama_model_n_head_kv(g_model) << "},";
+    oss << "\"core\":" << "{" << "\"n_vocab\":" << (vocab ? llama_vocab_n_tokens(vocab) : 0)
+        << ",\"n_ctx_train\":" << llama_model_n_ctx_train(g_model) << ",\"n_embd\":"
+        << llama_model_n_embd(g_model) << ",\"n_layer\":" << llama_model_n_layer(g_model)
+        << ",\"n_head\":" << llama_model_n_head(g_model) << ",\"n_head_kv\":"
+        << llama_model_n_head_kv(g_model) << "},";
     if (vocab) {
-        oss << "\"special\":"
-            << "{" << "\"bos\":" << llama_vocab_bos(vocab)
-            << ",\"eos\":" << llama_vocab_eos(vocab)
-            << ",\"eot\":" << llama_vocab_eot(vocab)
-            << ",\"nl\":"  << llama_vocab_nl(vocab) << "},";
+        oss << "\"special\":" << "{" << "\"bos\":" << llama_vocab_bos(vocab) << ",\"eos\":"
+            << llama_vocab_eos(vocab) << ",\"eot\":" << llama_vocab_eot(vocab) << ",\"nl\":"
+            << llama_vocab_nl(vocab) << "},";
     }
 
     // Get chat template from model metadata
@@ -429,25 +618,51 @@ Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv *env, jobject) {
 static std::string apply_chat_template(const llama_model *model, const std::string &system_msg,
                                        const std::string &user_msg, bool add_assistant) {
     const char *tmpl = nullptr;
-    if (!g_chat_template_override.empty()) { tmpl = g_chat_template_override.c_str(); LOGI("Using Custom Chat-Template"); }
-    else                                   { tmpl = llama_model_chat_template(model, nullptr); LOGI("Using model chat template %s", tmpl ? "(ok)" : "(missing)"); }
+    if (!g_chat_template_override.empty()) {
+        tmpl = g_chat_template_override.c_str();
+        LOGI("Using Custom Chat-Template");
+    }
+    else {
+        tmpl = llama_model_chat_template(model, nullptr);
+        LOGI("Using model chat template %s", tmpl ? "(ok)" : "(missing)");
+    }
 
     if (!tmpl || *tmpl == '\0') {
-        std::string out; if (!system_msg.empty()) { out += "System: "; out += system_msg; out += "\n"; }
-        out += "User: "; out += user_msg; out += "\nAssistant: ";
+        std::string out;
+        if (!system_msg.empty()) {
+            out += "System: ";
+            out += system_msg;
+            out += "\n";
+        }
+        out += "User: ";
+        out += user_msg;
+        out += "\nAssistant: ";
         return out;
     }
 
-    std::vector<llama_chat_message> msgs; if (!system_msg.empty()) msgs.push_back({"system", system_msg.c_str()}); msgs.push_back({"user", user_msg.c_str()});
-    int32_t need = llama_chat_apply_template(tmpl, msgs.data(), (int32_t) msgs.size(), add_assistant, nullptr, 0);
-    if (need < 0) need = -need; std::string out((size_t) need, '\0');
-    int32_t written = llama_chat_apply_template(tmpl, msgs.data(), (int32_t) msgs.size(), add_assistant, out.data(), need);
-    if (written < 0) written = -written; out.resize((size_t) written); return out;
+    std::vector<llama_chat_message> msgs;
+    if (!system_msg.empty()) msgs.push_back({"system", system_msg.c_str()});
+    msgs.push_back({"user", user_msg.c_str()});
+    int32_t need = llama_chat_apply_template(tmpl, msgs.data(), (int32_t) msgs.size(),
+                                             add_assistant, nullptr, 0);
+    if (need < 0) need = -need;
+    std::string out((size_t) need, '\0');
+    int32_t written = llama_chat_apply_template(tmpl, msgs.data(), (int32_t) msgs.size(),
+                                                add_assistant, out.data(), need);
+    if (written < 0) written = -written;
+    out.resize((size_t) written);
+    return out;
 }
 
 static std::string detok_piece(const llama_vocab *vocab, llama_token tok) {
-    char tmp[512]; int n = llama_token_to_piece(vocab, tok, tmp, (int) sizeof(tmp), 0, true);
-    if (n < 0) { std::string out; out.resize((size_t) (-n)); llama_token_to_piece(vocab, tok, out.data(), -n, 0, true); return out; }
+    char tmp[512];
+    int n = llama_token_to_piece(vocab, tok, tmp, (int) sizeof(tmp), 0, true);
+    if (n < 0) {
+        std::string out;
+        out.resize((size_t) (-n));
+        llama_token_to_piece(vocab, tok, out.data(), -n, 0, true);
+        return out;
+    }
     return std::string(tmp, tmp + n);
 }
 
@@ -457,14 +672,21 @@ static std::string detok_piece(const llama_vocab *vocab, llama_token tok) {
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*/, jstring jprompt,
                                                     jint max_tokens, jobject jcallback) {
-    if (!g_ctx || !g_model) { jni_on_error(env, jcallback, "Not initialized"); return JNI_FALSE; }
+    if (!g_ctx || !g_model) {
+        jni_on_error(env, jcallback, "Not initialized");
+        return JNI_FALSE;
+    }
 
     // Reset between turns
     {
-        llama_memory_t mem = llama_get_memory(g_ctx); if (mem) llama_memory_clear(mem, /*data=*/true);
+        llama_memory_t mem = llama_get_memory(g_ctx);
+        if (mem) llama_memory_clear(mem, /*data=*/true);
         if (!g_sampler) rebuild_sampler_chain(false); else llama_sampler_reset(g_sampler);
     }
-    g_stop_requested = false; g_in_tool_json = false; g_tool_accum.clear(); g_brace_depth = 0;
+    g_stop_requested = false;
+    g_in_tool_json = false;
+    g_tool_accum.clear();
+    g_brace_depth = 0;
 
     const std::string user_prompt = jstr_to_utf8(env, jprompt);
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
@@ -473,7 +695,8 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*
     if (g_tools_enabled) enable_tool_grammar_if_needed(); else rebuild_sampler_chain(false);
 
     // Compose system prompt (+ tools preamble)
-    std::string system_msg = g_system_prompt; if (g_tools_enabled) system_msg += std::string("\n") + tool_preamble(g_tools_json);
+    std::string system_msg = g_system_prompt;
+    if (g_tools_enabled) system_msg += std::string("\n") + tool_preamble(g_tools_json);
 
     std::string rendered = apply_chat_template(g_model, system_msg, user_prompt, true);
     LOGI("rendered.size=%d", (int) rendered.size());
@@ -481,53 +704,103 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*
     // Tokenize
     std::vector<llama_token> toks;
     {
-        int32_t guess = (int32_t) rendered.size() + 8; toks.resize((size_t) guess);
-        int32_t n = llama_tokenize(vocab, rendered.c_str(), (int32_t) rendered.size(), toks.data(), (int32_t) toks.size(), true, true);
-        if (n < 0) { toks.resize((size_t) (-n)); n = llama_tokenize(vocab, rendered.c_str(), (int32_t) rendered.size(), toks.data(), (int32_t) toks.size(), true, true); }
-        if (n < 0) { jni_on_error(env, jcallback, "tokenize failed"); return JNI_FALSE; }
-        toks.resize((size_t) n); LOGI("prompt toks = %d", (int) toks.size());
+        int32_t guess = (int32_t) rendered.size() + 8;
+        toks.resize((size_t) guess);
+        int32_t n = llama_tokenize(vocab, rendered.c_str(), (int32_t) rendered.size(), toks.data(),
+                                   (int32_t) toks.size(), true, true);
+        if (n < 0) {
+            toks.resize((size_t) (-n));
+            n = llama_tokenize(vocab, rendered.c_str(), (int32_t) rendered.size(), toks.data(),
+                               (int32_t) toks.size(), true, true);
+        }
+        if (n < 0) {
+            jni_on_error(env, jcallback, "tokenize failed");
+            return JNI_FALSE;
+        }
+        toks.resize((size_t) n);
+        LOGI("prompt toks = %d", (int) toks.size());
     }
 
     // Clamp generation to available context (leave headroom of 8)
     int32_t room = g_ctx_size - (int32_t) toks.size() - 8;
-    if (room <= 0) { jni_on_error(env, jcallback, "context overflow before generation (reduce prompt)"); flush_utf8_carry(env, jcallback); jni_on_done(env, jcallback); return JNI_TRUE; }
+    if (room <= 0) {
+        jni_on_error(env, jcallback, "context overflow before generation (reduce prompt)");
+        flush_utf8_carry(env, jcallback);
+        jni_on_done(env, jcallback);
+        return JNI_TRUE;
+    }
     int32_t to_gen = std::min<int32_t>(max_tokens > 0 ? max_tokens : 128, room);
 
     // Feed prompt in chunks <= g_n_batch
     if (!decode_tokens_chunked(g_ctx, toks, /*start_pos=*/0, g_n_batch, env, jcallback)) {
-        flush_utf8_carry(env, jcallback); jni_on_done(env, jcallback); return JNI_TRUE;
+        flush_utf8_carry(env, jcallback);
+        jni_on_done(env, jcallback);
+        return JNI_TRUE;
     }
 
     // Streaming loop
     llama_batch one = llama_batch_init(1, 0, 1);
     int32_t cur_pos = (int32_t) toks.size();
-    const llama_token eos = llama_vocab_eos(vocab); const llama_token eot = llama_vocab_eot(vocab);
+    const llama_token eos = llama_vocab_eos(vocab);
+    const llama_token eot = llama_vocab_eot(vocab);
 
     for (int i = 0; i < to_gen; ++i, ++cur_pos) {
-        if (g_stop_requested) { LOGI("Generation stopped by user"); break; }
+        if (g_stop_requested) {
+            LOGI("Generation stopped by user");
+            break;
+        }
         llama_token tok = llama_sampler_sample(g_sampler, g_ctx, -1);
         llama_sampler_accept(g_sampler, tok);
-        if (i == 0 && (tok == eos || tok == eot)) { llama_token sp[4]; int nsp = llama_tokenize(vocab, " ", 1, sp, 4, true, true); if (nsp > 0) tok = sp[0]; }
+        if (i == 0 && (tok == eos || tok == eot)) {
+            llama_token sp[4];
+            int nsp = llama_tokenize(vocab, " ", 1, sp, 4, true, true);
+            if (nsp > 0) tok = sp[0];
+        }
         if (tok == eos || tok == eot) break;
 
         std::string piece = detok_piece(vocab, tok);
         LOGI("TOKENS :: %s :: %d", piece.c_str(), tok);
-        bool completed = false; if (g_tools_enabled) completed = maybe_collect_tool_json_chunk(piece);
+        bool completed = false;
+        if (g_tools_enabled) completed = maybe_collect_tool_json_chunk(piece);
         if (completed) {
             if (looks_like_toolcall_json(g_tool_accum)) {
-                std::string name = "tool"; size_t p = g_tool_accum.find("\"name\"");
-                if (p != std::string::npos) { p = g_tool_accum.find('"', g_tool_accum.find(':', p) + 1); size_t q = g_tool_accum.find('"', p + 1); if (p != std::string::npos && q != std::string::npos && q > p) name = g_tool_accum.substr(p + 1, q - p - 1); }
+                std::string name = "tool";
+                size_t p = g_tool_accum.find("\"name\"");
+                if (p != std::string::npos) {
+                    p = g_tool_accum.find('"', g_tool_accum.find(':', p) + 1);
+                    size_t q = g_tool_accum.find('"', p + 1);
+                    if (p != std::string::npos && q != std::string::npos && q > p)
+                        name = g_tool_accum.substr(p + 1, q - p - 1);
+                }
                 jni_on_toolcall(env, jcallback, name, g_tool_accum);
-                g_in_tool_json = false; g_tool_accum.clear();
+                g_in_tool_json = false;
+                g_tool_accum.clear();
                 break; // stop this turn; app will run tool and call again
-            } else { g_in_tool_json = false; g_tool_accum.clear(); }
+            } else {
+                g_in_tool_json = false;
+                g_tool_accum.clear();
+            }
         }
         if (!(g_tools_enabled && g_in_tool_json)) jni_on_token(env, jcallback, piece);
 
-        one.n_tokens = 1; one.token[0] = tok; one.pos[0] = cur_pos; one.n_seq_id[0] = 1; one.seq_id[0][0] = 0; one.logits[0] = true;
+        one.n_tokens = 1;
+        one.token[0] = tok;
+        one.pos[0] = cur_pos;
+        one.n_seq_id[0] = 1;
+        one.seq_id[0][0] = 0;
+        one.logits[0] = true;
         int rc = llama_decode(g_ctx, one);
-        if (rc != 0) { if (rc == 1) jni_on_error(env, jcallback, "decode failed during generation: no KV slot"); else jni_on_error(env, jcallback, "decode failed during generation"); break; }
-        if (env->ExceptionCheck()) { LOGE("Java exception during callback"); env->ExceptionClear(); break; }
+        if (rc != 0) {
+            if (rc == 1)
+                jni_on_error(env, jcallback, "decode failed during generation: no KV slot");
+            else jni_on_error(env, jcallback, "decode failed during generation");
+            break;
+        }
+        if (env->ExceptionCheck()) {
+            LOGE("Java exception during callback");
+            env->ExceptionClear();
+            break;
+        }
     }
 
     llama_batch_free(one);
@@ -536,6 +809,92 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv *env, jobject /*this*
     return JNI_TRUE;
 }
 
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeGetStateSize(JNIEnv *env, jobject thiz) {
+    if (!g_ctx) {
+        LOGE("No active context");
+        return 0;
+    }
+    return llama_state_get_size(g_ctx);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeLoadStateData(JNIEnv *env, jobject thiz, jbyteArray arr) {
+    if (!g_ctx) {
+        LOGE("No active context");
+        return JNI_FALSE;
+    }
+    jbyte *buf = env->GetByteArrayElements(arr, nullptr);
+    size_t sz = (size_t) env->GetArrayLength(arr);
+    size_t nbytes = llama_state_set_data(g_ctx, (const uint8_t *) buf, sz);
+    env->ReleaseByteArrayElements(arr, buf, 0);
+    return nbytes == sz ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeLoadStateFile(JNIEnv *env, jobject thiz, jstring jpath) {
+    const char *path = env->GetStringUTFChars(jpath, nullptr);
+    bool ok = false;
+
+    if (g_ctx && path) {
+        llama_file file(path, "rb");
+
+        const uint32_t magic = file.read_u32();
+        const uint32_t version = file.read_u32();
+
+        /* accept only valid session files */
+        if (magic == LLAMA_SESSION_MAGIC && version == LLAMA_SESSION_VERSION) {
+            const size_t n_token_count = file.read_u32();
+            std::vector<llama_token> tokens(n_token_count);
+            size_t n_token_read = 0;
+            ok = llama_state_load_file(g_ctx, path, tokens.data(), tokens.size(), &n_token_read);
+        }
+    }
+
+    env->ReleaseStringUTFChars(jpath, path);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeSaveStateFile(JNIEnv *env, jobject thiz, jstring jpath) {
+    const char *path = env->GetStringUTFChars(jpath, nullptr);
+    bool ok = false;
+
+    if (g_ctx && path) {
+        ok = llama_state_save_file(g_ctx, path, nullptr, 0);
+    }
+
+    env->ReleaseStringUTFChars(jpath, path);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeGetStateData(JNIEnv *env, jobject thiz) {
+    if (!g_ctx) { /* no context -> nothing to return */
+        return nullptr;
+    }
+
+    /* get how much data the state represents */
+    size_t sz = llama_state_get_size(g_ctx);
+    if (sz == 0) { /* empty state */
+        return nullptr;
+    }
+
+    /* allocate a Java byte[] of the exact size */
+    jbyteArray arr = env->NewByteArray(static_cast<jsize>(sz));
+    if (!arr) { /* allocation failed */
+        return nullptr;
+    }
+
+    /* obtain a writable buffer from the Java array */
+    jbyte *buf = env->GetByteArrayElements(arr, nullptr);
+    /* write the state into that buffer */
+    llama_state_get_data(g_ctx, reinterpret_cast<uint8_t *>(buf), sz);
+    /* release the buffer back to the JVM (0 = copy back, no free) */
+    env->ReleaseByteArrayElements(arr, buf, 0);
+
+    return arr;
+}
 // Fixed initialization function with proper return type
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jstring jpath,
@@ -549,7 +908,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jst
     std::lock_guard<std::mutex> _lock(g_init_mtx);
 
     // Convert Java string
-    const char* cstr = env->GetStringUTFChars(jpath, nullptr);
+    const char *cstr = env->GetStringUTFChars(jpath, nullptr);
     if (!cstr) {
         LOGE("Failed to get path string");
         return JNI_FALSE;
@@ -644,7 +1003,7 @@ Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtex
         return nullptr;
     }
 
-    LOGI("Embed: Processing text (length=%d)", (int)text.size());
+    LOGI("Embed: Processing text (length=%d)", (int) text.size());
 
     // Get vocab from model (matching nativeGenerateStream pattern)
     const llama_vocab *vocab = llama_model_get_vocab(g_model);
@@ -666,17 +1025,19 @@ Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtex
     {
         int32_t guess = (int32_t) text.size() + 8;
         toks.resize((size_t) guess);
-        int32_t n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(), (int32_t) toks.size(), true, true);
+        int32_t n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(),
+                                   (int32_t) toks.size(), true, true);
         if (n < 0) {
             toks.resize((size_t) (-n));
-            n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(), (int32_t) toks.size(), true, true);
+            n = llama_tokenize(vocab, text.c_str(), (int32_t) text.size(), toks.data(),
+                               (int32_t) toks.size(), true, true);
         }
         if (n < 0) {
             LOGE("Embed: Tokenization failed");
             return nullptr;
         }
         toks.resize((size_t) n);
-        LOGI("Embed: Tokenized to %d tokens", (int)toks.size());
+        LOGI("Embed: Tokenized to %d tokens", (int) toks.size());
     }
 
     if (toks.empty()) {
@@ -685,28 +1046,28 @@ Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtex
     }
 
     // Check context capacity
-    if ((int32_t)toks.size() >= g_ctx_size) {
-        LOGE("Embed: Text too long for context (%d tokens, max %d)", (int)toks.size(), g_ctx_size);
+    if ((int32_t) toks.size() >= g_ctx_size) {
+        LOGE("Embed: Text too long for context (%d tokens, max %d)", (int) toks.size(), g_ctx_size);
         return nullptr;
     }
 
     // Create batch for ALL tokens - this is crucial for embeddings
-    llama_batch batch = llama_batch_init((int32_t)toks.size(), 0, 1);
+    llama_batch batch = llama_batch_init((int32_t) toks.size(), 0, 1);
     if (!batch.token) {
         LOGE("Embed: Failed to create batch");
         return nullptr;
     }
 
     // Fill batch - CRITICAL: ALL tokens must be marked correctly for embeddings
-    for (int32_t i = 0; i < (int32_t)toks.size(); ++i) {
+    for (int32_t i = 0; i < (int32_t) toks.size(); ++i) {
         batch.token[i] = toks[i];
         batch.pos[i] = i;
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
         // For embeddings: all tokens should have logits = true or at least the last one
-        batch.logits[i] = (i == (int32_t)toks.size() - 1); // Only last token needs logits
+        batch.logits[i] = (i == (int32_t) toks.size() - 1); // Only last token needs logits
     }
-    batch.n_tokens = (int32_t)toks.size();
+    batch.n_tokens = (int32_t) toks.size();
 
     LOGI("Embed: Created batch with %d tokens, decoding...", batch.n_tokens);
 
@@ -729,7 +1090,7 @@ Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtex
     }
 
     // Try to get embeddings using different methods
-    const float* embeddings = nullptr;
+    const float *embeddings = nullptr;
 
     // Method 1: Try sequence-specific embeddings first
     embeddings = llama_get_embeddings_seq(g_ctx, 0);

@@ -49,7 +49,47 @@ class NativeLib private constructor(private val instanceId: String) {
 
     private var isMainModelInitialized = false
     private var isEmbeddingModelInitialized = false
+    /* ----------------------------------------------------------------
+             *  State‑size helpers
+             * ---------------------------------------------------------------- */
+    external fun nativeGetStateSize(): Long   // returns `llama_state_get_size(ctx)`
 
+    /* ----------------------------------------------------------------
+     *  State‑data helpers
+     * ---------------------------------------------------------------- */
+    /**
+     * Restores the state from the supplied byte array.
+     *
+     * @param state the full state buffer returned by [nativeGetStateData]
+     * @return true  if the buffer was accepted completely, false otherwise
+     */
+    external fun nativeLoadStateData(state: ByteArray): Boolean
+
+    /**
+     * Reads the entire state into a new byte array.
+     *
+     * @return the state buffer, or `null` if there's no active context
+     */
+    external fun nativeGetStateData(): ByteArray?
+
+    /* ----------------------------------------------------------------
+     *  Session file helpers
+     * ---------------------------------------------------------------- */
+    /**
+     * Loads a *session* file that contains the prompt and KV cache.
+     *
+     * @param path the file path in the filesystem
+     * @return true  on success, false on error / unsupported file
+     */
+    external fun nativeLoadStateFile(path: String): Boolean
+
+    /**
+     * Persists the current prompt + KV cache into a session file.
+     *
+     * @param path the destination file path
+     * @return true  on success, false on failure
+     */
+    external fun nativeSaveStateFile(path: String): Boolean
     fun initModel(
         path: String,
         threads: Int = Runtime.getRuntime().availableProcessors() / 2,
