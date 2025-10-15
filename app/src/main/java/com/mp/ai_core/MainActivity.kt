@@ -517,7 +517,7 @@ class MainActivity : ComponentActivity() {
 
         genJob = lifecycleScope.launch {
             try {
-                service?.generate(prompt, 512, cb) ?: tokenChannel.close()
+                service?.generate(prompt, 512, "", cb) ?: tokenChannel.close()
             } catch (e: RemoteException) {
                 tokenChannel.trySend("RPC failure: ${e.message}")
                 tokenChannel.close()
