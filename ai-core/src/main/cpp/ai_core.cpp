@@ -322,6 +322,45 @@ Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv *, jobject) {
     LOGI("Stop generation requested");
 }
 
+// Add this diagnostic function to your C++ file
+// Call it right after llama_model_load_from_file succeeds
+
+static void log_gpu_info() {
+    LOGI("=== GPU/OpenCL Diagnostic ===");
+
+    if (!g_model) {
+        LOGE("No model loaded");
+        return;
+    }
+
+    // Check if model reports GPU usage
+    // Note: This might not be available in all llama.cpp versions
+    // but it's worth trying
+
+    LOGI("Model pointer: %p", (void*)g_model);
+    LOGI("Context pointer: %p", (void*)g_ctx);
+
+    // Try to get backend info (if available in your llama.cpp version)
+    // This is a rough check - adjust based on your llama.cpp version
+
+    LOGI("Attempting to detect OpenCL backend...");
+
+    // Check if ggml was compiled with OpenCL
+#ifdef GGML_USE_OPENCL
+    LOGI("GGML_USE_OPENCL is defined - OpenCL support compiled in");
+#else
+    LOGE("GGML_USE_OPENCL NOT defined - OpenCL NOT compiled in!");
+#endif
+
+#ifdef GGML_OPENCL
+    LOGI("GGML_OPENCL is defined");
+#else
+    LOGE("GGML_OPENCL NOT defined!");
+#endif
+
+    LOGI("=== End GPU Diagnostic ===");
+}
+
 // -----------------------------------------------------------------------------
 // Tools helpers
 // -----------------------------------------------------------------------------
@@ -515,31 +554,56 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, j
 
     const int physCores = count_physical_cores();
 
+    // FIXED: Proper GPU layer handling
     int gpu_layers = gpuLayers;
-    if (gpu_layers < 0) gpu_layers = 10;
-    if (gpu_layers > 16) gpu_layers = 16;
+    if (gpu_layers < 0) {
+        // -1 means ALL layers - get actual layer count from model later
+        gpu_layers = 999; // Will be clamped by llama.cpp to actual layer count
+        LOGI("GPU: Offloading ALL layers (requested -1)");
+    } else if (gpu_layers == 0) {
+        LOGI("GPU: CPU-only mode (0 layers)");
+    } else {
+        LOGI("GPU: Offloading %d layers", gpu_layers);
+    }
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = gpu_layers;
     mparams.use_mmap = useMMAP;
     mparams.use_mlock = false;
     mparams.check_tensors = true;
+
+    LOGI("Loading model: %s", path.c_str());
     g_model = llama_model_load_from_file(path.c_str(), mparams);
     if (!g_model) {
         LOGE("Failed to load model: %s", path.c_str());
         free_everything();
         return JNI_FALSE;
     }
+    log_gpu_info();
+    // Log actual GPU offload info
+    int32_t n_layer = llama_model_n_layer(g_model);
+    LOGI("Model has %d layers total", n_layer);
+    if (gpu_layers > 0) {
+        int actual_offloaded = std::min(gpu_layers, n_layer);
+        LOGI("Actually offloading %d/%d layers to GPU", actual_offloaded, n_layer);
+    }
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize;
     cparams.n_batch = 256;
     cparams.n_ubatch = 64;
-    cparams.offload_kqv = false;
+
+    // FIXED: Enable KQV offloading for GPU
+    cparams.offload_kqv = (gpu_layers > 0); // true if using GPU
+
     cparams.n_seq_max = 1;
     cparams.n_threads = jthreads > 0 ? jthreads : physCores;
     cparams.n_threads_batch = cparams.n_threads;
     cparams.no_perf = true;
+
+    LOGI("Creating context (ctx_size=%d, offload_kqv=%s)",
+         ctxSize, cparams.offload_kqv ? "true" : "false");
+
     g_ctx = llama_init_from_model(g_model, cparams);
     if (!g_ctx) {
         LOGE("Failed to create context");
@@ -576,8 +640,12 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, j
     // Initial sampler chain
     rebuild_sampler_chain(/*with_grammar_first=*/false);
 
-    LOGI("Model initialized (gpu_layers=%d, n_batch=%d, n_ubatch=%d)", gpu_layers, cparams.n_batch,
-         cparams.n_ubatch);
+    LOGI("Model initialized successfully:");
+    LOGI("  - GPU layers: %d/%d", std::min(gpu_layers, n_layer), n_layer);
+    LOGI("  - KQV offload: %s", cparams.offload_kqv ? "enabled" : "disabled");
+    LOGI("  - Batch size: %d", cparams.n_batch);
+    LOGI("  - Context size: %d", ctxSize);
+
     return JNI_TRUE;
 }
 
@@ -895,6 +963,44 @@ Java_com_mp_ai_1core_NativeLib_nativeGetStateData(JNIEnv *env, jobject thiz) {
 
     return arr;
 }
+
+
+
+// Also add a JNI function to expose this info to Kotlin
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_mp_ai_1core_NativeLib_nativeGetBackendInfo(JNIEnv *env, jobject) {
+    std::ostringstream info;
+
+    info << "Backend Info:\n";
+
+#ifdef GGML_USE_OPENCL
+    info << "OpenCL: COMPILED IN\n";
+#else
+    info << "OpenCL: NOT COMPILED\n";
+#endif
+
+#ifdef GGML_OPENCL
+    info << "GGML_OPENCL: DEFINED\n";
+#else
+    info << "GGML_OPENCL: NOT DEFINED\n";
+#endif
+
+    if (g_model) {
+        info << "Model loaded: YES\n";
+        info << "Layers: " << llama_model_n_layer(g_model) << "\n";
+    } else {
+        info << "Model loaded: NO\n";
+    }
+
+    if (g_ctx) {
+        info << "Context created: YES\n";
+    } else {
+        info << "Context created: NO\n";
+    }
+
+    return env->NewStringUTF(info.str().c_str());
+}
+
 // Fixed initialization function with proper return type
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jstring jpath,
