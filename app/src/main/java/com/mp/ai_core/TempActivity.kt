@@ -18,6 +18,8 @@ import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
@@ -36,28 +38,24 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.mp.ai_core.services.IGenerationCallback
+import com.mp.ai_core.ui.theme.AiCoreTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.io.File
 import kotlin.math.roundToInt
 
-private const val MODEL_PATH = "/storage/emulated/0/Download/jamba-reasoning-3b-Q4_K_M.gguf"
-
 private fun sessionFile(context: Context) = File(context.filesDir, "my_session.sess")
 
 class TempActivity : ComponentActivity() {
 
-    /* UI state holders */
     private var vm_state by mutableStateOf("")
     private var promptState by mutableStateOf(TextFieldValue(""))
+    private var modelPathState by mutableStateOf(TextFieldValue("/storage/emulated/0/Download/Jan-v1-4B-Q6_k.gguf"))
     private var stateSize by mutableLongStateOf(0L)
     private var isGenerating by mutableStateOf(false)
     private var isModelLoaded by mutableStateOf(false)
-
-    /* GPU toggle */
     private var useGPU by mutableStateOf(true)
 
-    /* Token statistics */
     private var tokenCount by mutableIntStateOf(0)
     private var avgTokensPerSec by mutableFloatStateOf(0f)
     private var highestTokensPerSec by mutableFloatStateOf(0f)
@@ -68,17 +66,18 @@ class TempActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MainScreen() }
-
-        // Load the model on startup
-        loadModel()
+        setContent {
+            AiCoreTheme {
+                MainScreen()
+            }
+        }
     }
 
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun MainScreen() {
         Scaffold(
-            topBar = { TopAppBar(title = { Text("Llama‑cpp Demo") }) },
+            topBar = { TopAppBar(title = { Text("Llama-cpp Demo") }) },
             modifier = Modifier.fillMaxSize()
         ) { innerPadding ->
             Column(
@@ -86,6 +85,37 @@ class TempActivity : ComponentActivity() {
                     .padding(innerPadding)
                     .padding(16.dp)
             ) {
+                // MODEL PATH INPUT + LOAD / UNLOAD
+                Text("Model Path:", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = modelPathState,
+                    onValueChange = { modelPathState = it },
+                    colors = OutlinedTextFieldDefaults.colors(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 8.dp)
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                ) {
+                    Button(
+                        onClick = { loadModel() },
+                        enabled = !isGenerating && !isModelLoaded
+                    ) { Text("Load Model") }
+
+                    Button(
+                        onClick = {
+                            unloadModel()
+                            Toast.makeText(this@TempActivity, "Model unloaded", Toast.LENGTH_SHORT).show()
+                        },
+                        enabled = isModelLoaded
+                    ) { Text("Unload Model") }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(bottom = 16.dp))
+
                 // GPU Toggle
                 Row(
                     modifier = Modifier
@@ -102,7 +132,7 @@ class TempActivity : ComponentActivity() {
                         checked = useGPU,
                         onCheckedChange = {
                             useGPU = it
-                            loadModel()
+                            if (isModelLoaded) loadModel()
                         },
                         enabled = !isGenerating && isModelLoaded
                     )
@@ -110,18 +140,14 @@ class TempActivity : ComponentActivity() {
 
                 HorizontalDivider(modifier = Modifier.padding(bottom = 16.dp))
 
-                // Token Statistics
+                // Token stats
                 if (tokenCount > 0) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 16.dp)
                     ) {
-                        Text(
-                            text = "Token Statistics",
-                            style = MaterialTheme.typography.titleMedium
-                        )
-
+                        Text("Token Statistics", style = MaterialTheme.typography.titleMedium)
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -129,36 +155,26 @@ class TempActivity : ComponentActivity() {
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Column {
+                                Text("Tokens: $tokenCount", style = MaterialTheme.typography.bodySmall)
                                 Text(
-                                    text = "Tokens: $tokenCount",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                                Text(
-                                    text = "Average: ${avgTokensPerSec.roundToInt()} tok/s",
+                                    "Average: ${avgTokensPerSec.roundToInt()} tok/s",
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
                             Column(horizontalAlignment = Alignment.End) {
                                 Text(
-                                    text = "Highest: ${highestTokensPerSec.roundToInt()} tok/s",
+                                    "Highest: ${highestTokensPerSec.roundToInt()} tok/s",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.primary
                                 )
                                 Text(
-                                    text = "Lowest: ${if (lowestTokensPerSec == Float.MAX_VALUE) 0 else lowestTokensPerSec.roundToInt()} tok/s",
+                                    "Lowest: ${
+                                        if (lowestTokensPerSec == Float.MAX_VALUE) 0 else lowestTokensPerSec.roundToInt()
+                                    } tok/s",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.secondary
                                 )
                             }
-                        }
-
-                        if (isGenerating) {
-                            Text(
-                                text = "Current: ${currentTokensPerSec.roundToInt()} tok/s",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.tertiary,
-                                modifier = Modifier.padding(top = 4.dp)
-                            )
                         }
                     }
 
@@ -185,39 +201,23 @@ class TempActivity : ComponentActivity() {
                         enabled = !isGenerating && isModelLoaded && promptState.text.isNotBlank()
                     ) { Text("Generate") }
 
-                    Button(
-                        onClick = { saveStateToFile() },
-                        enabled = isModelLoaded
-                    ) { Text("Save State") }
-
-                    Button(
-                        onClick = { loadStateFromFile() },
-                        enabled = isModelLoaded
-                    ) { Text("Load State") }
-
-                    Button(
-                        onClick = { nativeLib.nativeStopGeneration() },
-                        enabled = isGenerating
-                    ) { Text("Stop") }
+                    Button(onClick = { saveStateToFile() }, enabled = isModelLoaded) { Text("Save State") }
+                    Button(onClick = { loadStateFromFile() }, enabled = isModelLoaded) { Text("Load State") }
+                    Button(onClick = { nativeLib.nativeStopGeneration() }, enabled = isGenerating) { Text("Stop") }
                 }
 
-                // State size
+                // Model info
                 Text(
                     text = "State size: ${stateSize / 1024} KiB (${stateSize} bytes)",
                     style = MaterialTheme.typography.bodySmall
                 )
-
                 Text(
                     text = "Mode: ${if (useGPU) "GPU (OpenCL)" else "CPU Only"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = if (useGPU) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
                 )
 
-                HorizontalDivider(
-                    modifier = Modifier.padding(vertical = 12.dp),
-                    thickness = DividerDefaults.Thickness,
-                    color = DividerDefaults.color
-                )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
 
                 // Result area
                 Text("Result:", style = MaterialTheme.typography.titleMedium)
@@ -229,64 +229,69 @@ class TempActivity : ComponentActivity() {
                     shape = MaterialTheme.shapes.medium,
                     tonalElevation = 1.dp
                 ) {
-                    Text(
-                        text = vm_state,
-                        modifier = Modifier.padding(12.dp)
-                    )
+                    Text(text = vm_state, modifier = Modifier.padding(12.dp))
                 }
             }
         }
     }
 
     private fun loadModel() {
+        val modelPath = modelPathState.text.trim()
+        if (!File(modelPath).exists()) {
+            Toast.makeText(this, "Model file not found!", Toast.LENGTH_LONG).show()
+            return
+        }
+
         lifecycleScope.launch(Dispatchers.IO) {
             isModelLoaded = false
 
-            // Release existing model if loaded
             try {
                 NativeLib.releaseInstance("generation")
-            } catch (_: Exception) {
-                // Ignore if nothing to release
-            }
+            } catch (_: Exception) {}
 
             val gpuLayers = if (useGPU) -1 else 0
-
             runOnUiThread {
                 Toast.makeText(
                     this@TempActivity,
-                    "Loading model with ${if (useGPU) "GPU" else "CPU"}...",
+                    "Loading model (${if (useGPU) "GPU" else "CPU"})...",
                     Toast.LENGTH_SHORT
                 ).show()
             }
 
             val ok = nativeLib.initModel(
-                path = MODEL_PATH,
+                path = modelPath,
                 threads = Runtime.getRuntime().availableProcessors() / 2,
                 gpuLayers = gpuLayers,
                 ctxSize = 4096
             )
 
-            if (!ok) {
-                runOnUiThread {
+            runOnUiThread {
+                if (!ok) {
                     Toast.makeText(
                         this@TempActivity,
-                        "Failed to load model with ${if (useGPU) "GPU" else "CPU"}",
+                        "Failed to load model!",
                         Toast.LENGTH_LONG
                     ).show()
-                }
-            } else {
-                isModelLoaded = true
-                stateSize = nativeLib.nativeGetStateSize()
-                updateStateSizeText()
-
-                runOnUiThread {
+                } else {
+                    isModelLoaded = true
+                    stateSize = nativeLib.nativeGetStateSize()
                     Toast.makeText(
                         this@TempActivity,
-                        "Model loaded with ${if (useGPU) "GPU (OpenCL)" else "CPU"}!",
+                        "Model loaded successfully!",
                         Toast.LENGTH_SHORT
                     ).show()
                 }
             }
+        }
+    }
+
+    private fun unloadModel() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                NativeLib.releaseInstance("generation")
+                isModelLoaded = false
+                stateSize = 0
+            } catch (_: Exception) {}
         }
     }
 
