@@ -34,6 +34,8 @@ android {
                 // Disable Vulkan, Enable OpenCL
                 arguments += "-DGGML_VULKAN=OFF"
                 arguments += "-DGGML_OPENCL=ON"
+                arguments += "-DGGML_OPENCL_EMBED_KERNELS=ON"        // Fixed: -D not -G
+                arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=ON"   // Fixed: -D not -G
 
                 // OpenCL paths (CMake will append ANDROID_ABI)
                 arguments += "-DOpenCL_INCLUDE_DIR=${projectDir}/opencl/include"
