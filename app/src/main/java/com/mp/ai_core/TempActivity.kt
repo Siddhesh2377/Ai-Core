@@ -3,16 +3,20 @@ package com.mp.ai_core
 import android.content.Context
 import android.os.Bundle
 import android.os.IBinder
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.DividerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -49,12 +53,12 @@ private fun sessionFile(context: Context) = File(context.filesDir, "my_session.s
 class TempActivity : ComponentActivity() {
 
     private var vm_state by mutableStateOf("")
-    private var promptState by mutableStateOf(TextFieldValue(""))
-    private var modelPathState by mutableStateOf(TextFieldValue("/storage/emulated/0/Download/Jan-v1-4B-Q6_k.gguf"))
+    private var promptState by mutableStateOf(TextFieldValue("Hi"))
+    private var modelPathState by mutableStateOf(TextFieldValue("/storage/emulated/0/Download/Models/lucy_128k-Q3_K_S.gguf"))
     private var stateSize by mutableLongStateOf(0L)
     private var isGenerating by mutableStateOf(false)
     private var isModelLoaded by mutableStateOf(false)
-    private var useGPU by mutableStateOf(true)
+    private var useGPU by mutableStateOf(false)
 
     private var tokenCount by mutableIntStateOf(0)
     private var avgTokensPerSec by mutableFloatStateOf(0f)
@@ -66,9 +70,9 @@ class TempActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
         setContent {
-
-
             AiCoreTheme {
                 MainScreen()
             }
@@ -223,13 +227,12 @@ class TempActivity : ComponentActivity() {
 
                 // Result area
                 Text("Result:", style = MaterialTheme.typography.titleMedium)
-                Surface(
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(1f)
-                        .padding(top = 8.dp),
-                    shape = MaterialTheme.shapes.medium,
-                    tonalElevation = 1.dp
+                        .padding(top = 8.dp)
+                        .verticalScroll(rememberScrollState()),
                 ) {
                     Text(text = vm_state, modifier = Modifier.padding(12.dp))
                 }
@@ -251,7 +254,7 @@ class TempActivity : ComponentActivity() {
                 NativeLib.releaseInstance("generation")
             } catch (_: Exception) {}
 
-            val gpuLayers = if (useGPU) -1 else 0
+            val gpuLayers = if (useGPU) 5 else 0
             runOnUiThread {
                 Toast.makeText(
                     this@TempActivity,
@@ -345,6 +348,7 @@ class TempActivity : ComponentActivity() {
                     }
 
                     override fun onDone() {
+                        nativeLib.llamaPrintTimings()
                         isGenerating = false
                         stateSize = nativeLib.nativeGetStateSize()
                         val totalMs = System.currentTimeMillis() - start

@@ -168,6 +168,8 @@ class NativeLib private constructor(private val instanceId: String) {
         minP: Float
     ): Boolean
 
+    external fun llamaPrintTimings()
+
     external fun nativeRelease(): Boolean
     external fun nativeSetChatTemplate(template: String)
     external fun nativeInitForEmbeddings(

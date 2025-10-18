@@ -31,15 +31,17 @@ android {
                 arguments += "-DGGML_LLAMAFILE=ON"
                 arguments += "-DGGML_PAGE_SIZE=16384"
 
-                // Disable Vulkan, Enable OpenCL
+
                 arguments += "-DGGML_VULKAN=OFF"
-                arguments += "-DGGML_OPENCL=ON"
-                arguments += "-DGGML_OPENCL_EMBED_KERNELS=ON"        // Fixed: -D not -G
-                arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=ON"   // Fixed: -D not -G
+                arguments += "-DGGML_USE_OPENCL=OFF"
+                arguments += "-DGGML_OPENCL_EMBED_KERNELS=OFF"
+                arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=OFF"
+                arguments += "-DGGML_OPENCL_DOWNLOAD_KERNELS=OFF"
+
 
                 // OpenCL paths (CMake will append ANDROID_ABI)
-                arguments += "-DOpenCL_INCLUDE_DIR=${projectDir}/opencl/include"
-                arguments += "-DOPENCL_LIB_BASE=${projectDir}/opencl/lib"
+//                arguments += "-DOpenCL_INCLUDE_DIR=${projectDir}/opencl/include"
+//                arguments += "-DOPENCL_LIB_BASE=${projectDir}/opencl/lib"
 
                 // Build type
                 arguments += "-DCMAKE_BUILD_TYPE=Release"
@@ -79,6 +81,11 @@ android {
 
     buildFeatures {
         aidl = true
+    }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
     }
 }
 

@@ -16,6 +16,7 @@
 #include "cpu_helper.h"
 #include <llama-mmap.h>
 #include "llama-io.h"
+#include "ggml-backend.h"
 
 #if defined(__ANDROID__)
 
@@ -47,7 +48,7 @@ static bool g_tools_enabled = false;
 
 // Runtime params (saved at init so we rebuild chains consistently)
 static int g_ctx_size = 2048;
-static int g_n_batch = 256;
+static int g_n_batch = 512;
 static int g_init_top_k = 20;
 static float g_init_top_p = 0.9f;
 static float g_init_temp = 0.7f;
@@ -60,6 +61,24 @@ static thread_local std::string g_utf8_carry;
 static std::string g_tool_accum;
 static int g_brace_depth = 0;
 static bool g_in_tool_json = false;
+
+static void log_gpu_info() {
+    LOGI("=== GPU Diagnostic ===");
+
+    // Detect any registered device
+    int count = ggml_backend_dev_count();
+    if (count == 0) {
+        LOGE("No GPU devices found – will run purely on CPU");
+        return;
+    }
+
+    for (int i=0; i<count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const char *name = ggml_backend_dev_name(dev);
+        const char *desc = ggml_backend_dev_description(dev);
+        LOGI("GPU %d: %s (%s)", i, name, desc ? desc : "unknown");
+    }
+}
 
 // -----------------------------------------------------------------------------
 // UTF helpers (UTF-16 <-> UTF-8, streaming-safe)
@@ -324,43 +343,6 @@ Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv *, jobject) {
 
 // Add this diagnostic function to your C++ file
 // Call it right after llama_model_load_from_file succeeds
-
-static void log_gpu_info() {
-    LOGI("=== GPU/OpenCL Diagnostic ===");
-
-    if (!g_model) {
-        LOGE("No model loaded");
-        return;
-    }
-
-    // Check if model reports GPU usage
-    // Note: This might not be available in all llama.cpp versions
-    // but it's worth trying
-
-    LOGI("Model pointer: %p", (void*)g_model);
-    LOGI("Context pointer: %p", (void*)g_ctx);
-
-    // Try to get backend info (if available in your llama.cpp version)
-    // This is a rough check - adjust based on your llama.cpp version
-
-    LOGI("Attempting to detect OpenCL backend...");
-
-    // Check if ggml was compiled with OpenCL
-#ifdef GGML_USE_OPENCL
-    LOGI("GGML_USE_OPENCL is defined - OpenCL support compiled in");
-#else
-    LOGE("GGML_USE_OPENCL NOT defined - OpenCL NOT compiled in!");
-#endif
-
-#ifdef GGML_OPENCL
-    LOGI("GGML_OPENCL is defined");
-#else
-    LOGE("GGML_OPENCL NOT defined!");
-#endif
-
-    LOGI("=== End GPU Diagnostic ===");
-}
-
 // -----------------------------------------------------------------------------
 // Tools helpers
 // -----------------------------------------------------------------------------
@@ -541,6 +523,12 @@ Java_com_mp_ai_1core_NativeLib_nativeRelease(JNIEnv *, jobject) {
 
 static std::mutex g_init_mtx;
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_mp_ai_1core_NativeLib_llamaPrintTimings(JNIEnv *env, jobject thiz) {
+    llama_print_system_info();
+    llama_perf_context_print(g_ctx);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, jint jthreads,
                                           jint gpuLayers, jboolean useMMAP, jboolean /*useMLOCK*/,
@@ -552,7 +540,10 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, j
     free_everything();
     llama_backend_init();
 
+
+
     const int physCores = count_physical_cores();
+
 
     // FIXED: Proper GPU layer handling
     int gpu_layers = gpuLayers;
@@ -590,16 +581,16 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv *env, jobject, jstring jpath, j
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize;
-    cparams.n_batch = 256;
-    cparams.n_ubatch = 64;
+    cparams.n_batch = 254;
+    cparams.n_ubatch = 128;
 
     // FIXED: Enable KQV offloading for GPU
-    cparams.offload_kqv = (gpu_layers > 0); // true if using GPU
+    cparams.offload_kqv = true; // true if using GPU
 
     cparams.n_seq_max = 1;
     cparams.n_threads = jthreads > 0 ? jthreads : physCores;
     cparams.n_threads_batch = cparams.n_threads;
-    cparams.no_perf = true;
+    cparams.no_perf = false;
 
     LOGI("Creating context (ctx_size=%d, offload_kqv=%s)",
          ctxSize, cparams.offload_kqv ? "true" : "false");
@@ -1042,7 +1033,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jst
     mparams.check_tensors = true;
 
     LOGI("Loading model with %d GPU layers", gpu_layers);
-    g_model = llama_load_model_from_file(path.c_str(), mparams);
+    g_model = llama_model_load_from_file(path.c_str(), mparams);
     if (!g_model) {
         LOGE("Failed to load model: %s", path.c_str());
         free_everything();
@@ -1066,7 +1057,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jst
     cparams.embeddings = true;
 
     LOGI("Creating context with embeddings enabled");
-    g_ctx = llama_new_context_with_model(g_model, cparams);
+    g_ctx = llama_init_from_model(g_model, cparams);
     if (!g_ctx) {
         LOGE("Failed to create context");
         free_everything();
@@ -1078,7 +1069,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jst
     g_n_batch = cparams.n_batch;
 
     // Verify embeddings are actually enabled
-    int32_t n_embd = llama_n_embd(g_model);
+    int32_t n_embd = llama_model_n_embd(g_model);
     if (n_embd <= 0) {
         LOGE("Model does not support embeddings (n_embd = %d)", n_embd);
         free_everything();
@@ -1189,7 +1180,7 @@ Java_com_mp_ai_1core_NativeLib_embed(JNIEnv *env, jobject /*this*/, jstring jtex
     llama_batch_free(batch);
 
     // Get embeddings dimension
-    int32_t n_embd = llama_n_embd(g_model);
+    int32_t n_embd = llama_model_n_embd(g_model);
     if (n_embd <= 0) {
         LOGE("Embed: Invalid embedding dimension: %d", n_embd);
         return nullptr;
