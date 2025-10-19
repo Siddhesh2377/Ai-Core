@@ -30,7 +30,6 @@ target_link_libraries(llama PRIVATE vulkanhpp_iface)
 add_library(${CMAKE_PROJECT_NAME} SHARED
         ai_core.cpp
         cpu_helper.cpp
-        embed_search.cpp
 )
 
 # Link Vulkan headers interface here (AFTER it's created)
