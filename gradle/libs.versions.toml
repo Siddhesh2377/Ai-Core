@@ -67,6 +67,7 @@ espressoCore = "3.7.0"
 
 # ▶ Java 8+ APIs on old devices
 desugar_jdk_libs = "2.1.5"
+foundation = "1.9.3"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -134,7 +135,8 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-ui-test-manifest = { group = "androidx.compose.ui", name = "ui-test-manifest" }          # Version via BOM
-androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }              # Version via BOM
+androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit4" }
+androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation", version.ref = "foundation" }              # Version via BOM
 
 
 # ──────────────────────────────────────────────────────────────────────────────

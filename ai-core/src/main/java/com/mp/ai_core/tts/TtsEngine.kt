@@ -183,7 +183,7 @@ object TtsEngine {
         )
     }
 
-    private fun callback(samples: FloatArray): Int {
+    private fun callback(samples: FloatArray, process: Float): Int {
         if (!stopped) {
             val samplesCopy = samples.copyOf()
             scope.launch {

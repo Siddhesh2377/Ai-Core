@@ -1,82 +1,65 @@
 package com.mp.ai_core
 
-import android.annotation.SuppressLint
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaPlayer
-import android.net.Uri
 import android.os.Bundle
 import android.os.RemoteException
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DividerDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.mp.ai_core.tts.TtsEngine
 import com.mp.ai_core.ui.theme.AiCoreTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import kotlin.time.TimeSource
+
+data class DialogLine(
+    val voiceId: Int, val text: String, val speakerName: String
+)
 
 class TTSActivity : ComponentActivity() {
     companion object {
-        private const val TAG = "sherpa-onnx-tts-engine"
+        private const val TAG = "sherpa-onnx-tts"
         private const val OUTPUT_FILENAME = "generated.wav"
     }
 
     private var mediaPlayer: MediaPlayer? = null
-    private lateinit var track: AudioTrack
-    private var stopped: Boolean = false
-    private var samplesChannel = Channel<FloatArray>()
+    private lateinit var audioTrack: AudioTrack
+    private var isStopped = false
+    private val samplesChannel = Channel<FloatArray>(Channel.UNLIMITED)
+    private var playbackJob: Job? = null
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,8 +71,8 @@ class TTSActivity : ComponentActivity() {
 
         setContent {
             AiCoreTheme {
-                TtsScreen(
-                    onGenerate = ::onGenerate, onPlay = ::onClickPlay, onStop = ::onClickStop
+                TtsConversationScreen(
+                    onPlayConversation = ::playConversation, onStop = ::stopPlayback
                 )
             }
         }
@@ -97,37 +80,52 @@ class TTSActivity : ComponentActivity() {
 
     override fun onDestroy() {
         stopMediaPlayer()
-        track.release()
+        stopPlayback()
+        audioTrack.release()
+        samplesChannel.close()
         super.onDestroy()
     }
 
     private fun initializeTts() {
-        Log.i(TAG, "Start to initialize TTS")
+        Log.i(TAG, "Initializing TTS")
+        val modelDir = "kokoro-int8-multi-lang-v1_1"
+
+        val json2 = """
+        {
+          "modelDir": "$modelDir",
+          "modelName": "model.int8.onnx",
+          "voices": "voices.bin",
+          "dataDir": "$modelDir/espeak-ng-data",
+          "lang": "eng",
+          "lexicon": "lexicon-gb-en.txt",
+          "ruleFsts": "$modelDir/phone-zh.fst,$modelDir/date-zh.fst,$modelDir/number-zh.fst"
+        }
+        """.trimIndent()
+
+
         val json = """
         {
-          "modelDir": "kokoro-en-v0_19",
-          "modelName": "model.onnx",
-          "voices": "voices.bin",
-          "dataDir": "kokoro-en-v0_19/espeak-ng-data",
-          "lang": "eng",
+         "modelDir" = "kokoro-en-v0_19",
+         "modelName" = "model.onnx",
+         "voices" = "voices.bin",
+         "dataDir" = "kokoro-en-v0_19/espeak-ng-data",
+         "lang" = "eng"
         }
         """.trimIndent()
 
         try {
             TtsEngine.loadFromJson(this, json)
+            Log.i(TAG, "TTS initialized successfully")
         } catch (e: RemoteException) {
-            Log.e(TAG, "TTS load RPC failed", e)
+            Log.e(TAG, "TTS initialization failed", e)
         }
-        Log.i(TAG, "Finish initializing TTS")
     }
 
     private fun initAudioTrack() {
-        Log.i(TAG, "Start to initialize AudioTrack")
         val sampleRate = TtsEngine.tts!!.sampleRate()
         val bufLength = AudioTrack.getMinBufferSize(
             sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT
         )
-        Log.i(TAG, "sampleRate: $sampleRate, buffLength: $bufLength")
 
         val attr = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .setUsage(AudioAttributes.USAGE_MEDIA).build()
@@ -135,286 +133,306 @@ class TTSActivity : ComponentActivity() {
         val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
             .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setSampleRate(sampleRate).build()
 
-        track = AudioTrack(
-            attr, format, bufLength, AudioTrack.MODE_STREAM, AudioManager.AUDIO_SESSION_ID_GENERATE
+        audioTrack = AudioTrack(
+            attr,
+            format,
+            bufLength,
+            AudioTrack.MODE_STREAM,
+            android.media.AudioManager.AUDIO_SESSION_ID_GENERATE
         )
-        track.play()
-        Log.i(TAG, "Finish initializing AudioTrack")
+        audioTrack.play()
     }
 
-    @SuppressLint("DefaultLocale")
-    private suspend fun onGenerate(text: String, speakerId: Int): String {
-        return withContext(Dispatchers.IO) {
-            stopped = false
-            track.pause()
-            track.flush()
-            track.play()
+    private suspend fun playConversation(
+        conversation: List<DialogLine>, onLineChange: (Int) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        isStopped = false
+        audioTrack.pause()
+        audioTrack.flush()
+        audioTrack.play()
 
-            // Launch audio playback coroutine
-            launch {
-                for (samples in samplesChannel) {
-                    track.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
-                    if (stopped) break
-                }
+        // Start audio playback coroutine
+        playbackJob = launch {
+            for (samples in samplesChannel) {
+                if (isStopped) break
+                audioTrack.write(samples, 0, samples.size, AudioTrack.WRITE_BLOCKING)
+            }
+        }
+
+        // Generate and play each line
+        conversation.forEachIndexed { index, line ->
+            if (isStopped) return@withContext
+
+            withContext(Dispatchers.Main) {
+                onLineChange(index)
             }
 
-            val timeSource = TimeSource.Monotonic
-            val startTime = timeSource.markNow()
+            TtsEngine.tts?.apply {
+                currentSid = line.voiceId
+                generateWithCallback(
+                    text = line.text, callback = ::callback)
+            }
 
-            val audio = TtsEngine.tts!!.generateWithCallback(
-                text = text,
-                sid = speakerId,
-                callback = ::callback,
-            )
-
-            val elapsed = startTime.elapsedNow().inWholeMilliseconds.toFloat() / 1000
-            val audioDuration = audio.samples.size / TtsEngine.tts!!.sampleRate().toFloat()
-
-            val filename = application.filesDir.absolutePath + "/$OUTPUT_FILENAME"
-            audio.save(filename)
-
-            String.format(
-                "Threads: %d\nElapsed: %.3f s\nAudio: %.3f s\nRTF: %.3f",
-                TtsEngine.tts!!.config.model.numThreads,
-                elapsed,
-                audioDuration,
-                elapsed / audioDuration
-            )
+            // Small delay between lines
+            delay(300)
         }
+
+        withContext(Dispatchers.Main) {
+            onLineChange(-1) // Reset
+        }
+
+
     }
 
-    private fun stopMediaPlayer() {
-        mediaPlayer?.stop()
-        mediaPlayer?.release()
-        mediaPlayer = null
-    }
-
-    private fun onClickPlay() {
-        val filename = application.filesDir.absolutePath + "/$OUTPUT_FILENAME"
-        stopMediaPlayer()
-        mediaPlayer = MediaPlayer.create(
-            applicationContext, Uri.fromFile(File(filename))
-        )
-        mediaPlayer?.start()
-    }
-
-    private fun onClickStop() {
-        stopped = true
-        track.pause()
-        track.flush()
-        stopMediaPlayer()
-    }
-
-    private fun callback(samples: FloatArray): Int {
-        return if (!stopped) {
+    fun callback(samples: FloatArray, progress: Float): Int {
+        return if (!isStopped) {
             val samplesCopy = samples.copyOf()
             CoroutineScope(Dispatchers.IO).launch {
                 samplesChannel.send(samplesCopy)
             }
+            Log.d(TAG, "Callback called with progress: $progress")
             1
         } else {
-            track.stop()
             Log.i(TAG, "Callback stopped")
             0
         }
+    }
+
+    private fun stopPlayback() {
+        isStopped = true
+        playbackJob?.cancel()
+        audioTrack.pause()
+        audioTrack.flush()
+        stopMediaPlayer()
+    }
+
+    private fun stopMediaPlayer() {
+        mediaPlayer?.apply {
+            stop()
+            release()
+        }
+        mediaPlayer = null
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun TtsScreen(
-    onGenerate: suspend (String, Int) -> String, onPlay: () -> Unit, onStop: () -> Unit
+fun TtsConversationScreen(
+    onPlayConversation: suspend (List<DialogLine>, (Int) -> Unit) -> Unit, onStop: () -> Unit
 ) {
-    var inputText by remember { mutableStateOf("") }
-    var speakerId by remember { mutableStateOf("0") }
-    var isGenerating by remember { mutableStateOf(false) }
-    var hasGenerated by remember { mutableStateOf(false) }
-    var statsText by remember { mutableStateOf("") }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var currentLineIndex by remember { mutableStateOf(-1) }
+    var isPlaying by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    val scrollState = rememberScrollState()
+    val listState = rememberLazyListState()
+
+    val conversation = remember {
+        listOf(
+            DialogLine(1, "Hey guys! Are we meeting today for the project?", "Bella"),
+            DialogLine(6, "Hi Bella! Yes, I think around 5 PM works for me.", "Nicole"),
+            DialogLine(9, "I might be a bit late, traffic is crazy here.", "Sarah"),
+            DialogLine(10, "No worries Sarah, we can start without you.", "Sky"),
+            DialogLine(3, "Cool. Should I bring the laptops or just notes?", "Adam"),
+            DialogLine(6, "Laptops are fine. We can do some coding live.", "Michael"),
+            DialogLine(2, "Hey everyone! Just got in, did I miss anything?", "Emma"),
+            DialogLine(
+                8,
+                "Not much, Emma. We are deciding whether to meet in lab or cafe.",
+                "Isabella"
+            ),
+            DialogLine(4, "I vote for the lab. More quiet and we have all tools there.", "George"),
+            DialogLine(7, "Lab it is then! See you all at 5 PM.", "Lewis"),
+            DialogLine(1, "Great! See you guys later.", "Bella")
+        )
+    }
+
+    // Auto-scroll to current line
+    LaunchedEffect(currentLineIndex) {
+        if (currentLineIndex >= 0) {
+            listState.animateScrollToItem(
+                index = currentLineIndex, scrollOffset = -200
+            )
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        "Text-to-Speech Engine", style = MaterialTheme.typography.titleLarge
-                    )
+                    Column {
+                        Text(
+                            "Live Conversation", style = MaterialTheme.typography.titleLarge
+                        )
+                        if (isPlaying) {
+                            Text(
+                                "Playing...",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                            )
+                        }
+                    }
                 }, colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
                 )
             )
         }) { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .verticalScroll(scrollState)
-                .padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Speaker ID Input
-            OutlinedTextField(
-                value = speakerId,
-                onValueChange = { newValue ->
-                    if (newValue.isEmpty() || newValue.all { it.isDigit() }) {
-                        speakerId = newValue
-                    }
-                },
-                label = { Text("Speaker ID") },
-                placeholder = { Text("0") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isGenerating,
-                singleLine = true
-            )
-
-            // Text Input
-            OutlinedTextField(
-                value = inputText,
-                onValueChange = { inputText = it },
-                label = { Text("Enter text to synthesize") },
-                placeholder = { Text("Type something...") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 150.dp),
-                enabled = !isGenerating,
-                maxLines = 8,
-                shape = RoundedCornerShape(12.dp)
-            )
-
-            // Error Message
-            errorMessage?.let { error ->
-                Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.errorContainer
-                    ), modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = error,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.padding(12.dp),
-                        style = MaterialTheme.typography.bodyMedium
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                itemsIndexed(conversation) { index, line ->
+                    DialogCard(
+                        line = line,
+                        isActive = index == currentLineIndex,
+                        isPast = index < currentLineIndex
                     )
+                }
+
+                item {
+                    Spacer(modifier = Modifier.height(80.dp))
                 }
             }
 
-            // Action Buttons
+            // Floating Action Buttons
             Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Button(
+                FloatingActionButton(
                     onClick = {
-                        if (inputText.isBlank()) {
-                            errorMessage = "Please enter some text to synthesize"
-                            return@Button
-                        }
-
-                        errorMessage = null
-                        isGenerating = true
-                        hasGenerated = false
-
-                        scope.launch {
-                            try {
-                                val stats = onGenerate(
-                                    inputText, speakerId.toIntOrNull() ?: 0
-                                )
-                                statsText = stats
-                                hasGenerated = true
-                            } catch (e: Exception) {
-                                errorMessage = "Generation failed: ${e.message}"
-                            } finally {
-                                isGenerating = false
+                        if (isPlaying) {
+                            onStop()
+                            isPlaying = false
+                            currentLineIndex = -1
+                        } else {
+                            isPlaying = true
+                            scope.launch {
+                                try {
+                                    onPlayConversation(conversation) { index ->
+                                        currentLineIndex = index
+                                    }
+                                } finally {
+                                    isPlaying = false
+                                    currentLineIndex = -1
+                                }
                             }
                         }
                     },
-                    enabled = !isGenerating,
                     modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 12.dp)
+                    containerColor = if (isPlaying) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.primary
                 ) {
-                    if (isGenerating) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Generating...")
-                    } else {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 24.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
+                            imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                            contentDescription = if (isPlaying) "Stop" else "Play"
                         )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Generate")
+                        Text(
+                            text = if (isPlaying) "Stop" else "Play Conversation",
+                            style = MaterialTheme.typography.labelLarge
+                        )
                     }
                 }
+            }
+        }
+    }
+}
 
-                OutlinedButton(
-                    onClick = onPlay,
-                    enabled = hasGenerated && !isGenerating,
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 12.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PlayArrow,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Play")
-                }
+@Composable
+fun DialogCard(
+    line: DialogLine, isActive: Boolean, isPast: Boolean
+) {
+    val scale by animateFloatAsState(
+        targetValue = if (isActive) 1.05f else 1f, animationSpec = spring(
+            dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow
+        ), label = "scale"
+    )
 
-                OutlinedButton(
-                    onClick = {
-                        onStop()
-                        isGenerating = false
-                    },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = PaddingValues(vertical = 12.dp)
+    val containerColor by animateColorAsState(
+        targetValue = when {
+            isActive -> MaterialTheme.colorScheme.primaryContainer
+            isPast -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            else -> MaterialTheme.colorScheme.surface
+        }, label = "containerColor"
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .scale(scale), colors = CardDefaults.cardColors(
+            containerColor = containerColor
+        ), elevation = CardDefaults.cardElevation(
+            defaultElevation = if (isActive) 8.dp else 2.dp
+        ), shape = RoundedCornerShape(16.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = line.speakerName,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isActive) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+
+                AnimatedVisibility(
+                    visible = isActive, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Stop,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp)
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(50)
+                            )
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Stop")
                 }
             }
 
-            // Statistics Card
-            if (statsText.isNotEmpty()) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer
-                    )
-                ) {
-                    Column(
-                        modifier = Modifier.padding(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Text(
-                            text = "Generation Statistics",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            thickness = DividerDefaults.Thickness,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.3f)
-                        )
-                        Text(
-                            text = statsText,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                        )
-                    }
-                }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Text(
+                text = line.text,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                color = when {
+                    isActive -> MaterialTheme.colorScheme.onPrimaryContainer
+                    isPast -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    else -> MaterialTheme.colorScheme.onSurface
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            if (isActive) {
+                Spacer(modifier = Modifier.height(12.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
     }
