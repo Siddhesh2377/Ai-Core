@@ -43,6 +43,11 @@ android {
             jvmTarget.set(JvmTarget.JVM_11)
         }
     }
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 dependencies {

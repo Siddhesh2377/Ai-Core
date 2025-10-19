@@ -10,20 +10,14 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
+import androidx.compose.animation.*
+import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
@@ -32,9 +26,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.mp.ai_core.tts.TtsEngine
 import com.mp.ai_core.ui.theme.AiCoreTheme
 import kotlinx.coroutines.CoroutineScope
@@ -46,7 +47,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class DialogLine(
-    val voiceId: Int, val text: String, val speakerName: String
+    val voiceId: Int,
+    val text: String,
+    val speakerName: String,
+    val speed: Float = 1.0f
 )
 
 class TTSActivity : ComponentActivity() {
@@ -61,6 +65,12 @@ class TTSActivity : ComponentActivity() {
     private val samplesChannel = Channel<FloatArray>(Channel.UNLIMITED)
     private var playbackJob: Job? = null
 
+    private var currentLineCallback: ((Int) -> Unit)? = null
+    private var pendingLineIndex = -1
+
+    private val _currentProgress = mutableStateOf(0f)
+    val currentProgress: State<Float> = _currentProgress
+
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,7 +82,9 @@ class TTSActivity : ComponentActivity() {
         setContent {
             AiCoreTheme {
                 TtsConversationScreen(
-                    onPlayConversation = ::playConversation, onStop = ::stopPlayback
+                    onPlayConversation = ::playConversation,
+                    onStop = ::stopPlayback,
+                    currentProgress = currentProgress
                 )
             }
         }
@@ -102,14 +114,13 @@ class TTSActivity : ComponentActivity() {
         }
         """.trimIndent()
 
-
         val json = """
         {
-         "modelDir" = "kokoro-en-v0_19",
-         "modelName" = "model.onnx",
-         "voices" = "voices.bin",
-         "dataDir" = "kokoro-en-v0_19/espeak-ng-data",
-         "lang" = "eng"
+         "modelDir": "kokoro-en-v0_19",
+         "modelName": "model.onnx",
+         "voices": "voices.bin",
+         "dataDir": "kokoro-en-v0_19/espeak-ng-data",
+         "lang": "eng"
         }
         """.trimIndent()
 
@@ -127,11 +138,16 @@ class TTSActivity : ComponentActivity() {
             sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT
         )
 
-        val attr = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .setUsage(AudioAttributes.USAGE_MEDIA).build()
+        val attr = AudioAttributes.Builder()
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .build()
 
-        val format = AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setSampleRate(sampleRate).build()
+        val format = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+            .setSampleRate(sampleRate)
+            .build()
 
         audioTrack = AudioTrack(
             attr,
@@ -144,14 +160,14 @@ class TTSActivity : ComponentActivity() {
     }
 
     private suspend fun playConversation(
-        conversation: List<DialogLine>, onLineChange: (Int) -> Unit
+        conversation: List<DialogLine>,
+        onLineChange: (Int) -> Unit
     ) = withContext(Dispatchers.IO) {
         isStopped = false
         audioTrack.pause()
         audioTrack.flush()
         audioTrack.play()
 
-        // Start audio playback coroutine
         playbackJob = launch {
             for (samples in samplesChannel) {
                 if (isStopped) break
@@ -159,37 +175,46 @@ class TTSActivity : ComponentActivity() {
             }
         }
 
-        // Generate and play each line
         conversation.forEachIndexed { index, line ->
             if (isStopped) return@withContext
 
-            withContext(Dispatchers.Main) {
-                onLineChange(index)
-            }
+            // Store pending line info
+            pendingLineIndex = index
+            currentLineCallback = onLineChange
 
             TtsEngine.tts?.apply {
                 currentSid = line.voiceId
-                generateWithCallback(
-                    text = line.text, callback = ::callback)
-            }
+                currentSpeed = line.speed
 
-            // Small delay between lines
-            delay(300)
+                generateWithCallback(
+                    text = line.text,
+                    callback = ::callback
+                )
+            }
         }
 
         withContext(Dispatchers.Main) {
-            onLineChange(-1) // Reset
+            onLineChange(-1)
+            _currentProgress.value = 0f
         }
-
-
     }
 
     fun callback(samples: FloatArray, progress: Float): Int {
         return if (!isStopped) {
+            // Update UI on FIRST callback when audio actually starts
+            if (pendingLineIndex >= 0 && progress > 0f) {
+                val lineToShow = pendingLineIndex
+                CoroutineScope(Dispatchers.Main).launch {
+                    currentLineCallback?.invoke(lineToShow)
+                }
+                pendingLineIndex = -1
+            }
+
             val samplesCopy = samples.copyOf()
             CoroutineScope(Dispatchers.IO).launch {
                 samplesChannel.send(samplesCopy)
             }
+            _currentProgress.value = progress
             Log.d(TAG, "Callback called with progress: $progress")
             1
         } else {
@@ -203,6 +228,7 @@ class TTSActivity : ComponentActivity() {
         playbackJob?.cancel()
         audioTrack.pause()
         audioTrack.flush()
+        _currentProgress.value = 0f
         stopMediaPlayer()
     }
 
@@ -218,222 +244,291 @@ class TTSActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TtsConversationScreen(
-    onPlayConversation: suspend (List<DialogLine>, (Int) -> Unit) -> Unit, onStop: () -> Unit
+    onPlayConversation: suspend (List<DialogLine>, (Int) -> Unit) -> Unit,
+    onStop: () -> Unit,
+    currentProgress: State<Float>
 ) {
-    var currentLineIndex by remember { mutableStateOf(-1) }
+    var currentLineIndex by remember { mutableIntStateOf(-1) }
     var isPlaying by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
     val conversation = remember {
         listOf(
-            DialogLine(1, "Hey guys! Are we meeting today for the project?", "Bella"),
-            DialogLine(6, "Hi Bella! Yes, I think around 5 PM works for me.", "Nicole"),
-            DialogLine(9, "I might be a bit late, traffic is crazy here.", "Sarah"),
-            DialogLine(10, "No worries Sarah, we can start without you.", "Sky"),
-            DialogLine(3, "Cool. Should I bring the laptops or just notes?", "Adam"),
-            DialogLine(6, "Laptops are fine. We can do some coding live.", "Michael"),
-            DialogLine(2, "Hey everyone! Just got in, did I miss anything?", "Emma"),
-            DialogLine(
-                8,
-                "Not much, Emma. We are deciding whether to meet in lab or cafe.",
-                "Isabella"
-            ),
-            DialogLine(4, "I vote for the lab. More quiet and we have all tools there.", "George"),
-            DialogLine(7, "Lab it is then! See you all at 5 PM.", "Lewis"),
-            DialogLine(1, "Great! See you guys later.", "Bella")
+            // Team Human vs Team Robot - Balanced speeds
+            DialogLine(0, "Okay so hear me out, AI is definitely gonna take over and we're all cooked.", "Bella", 1.05f),
+            DialogLine(5, "Bella that's so dramatic, AI can't even make a decent meme yet.", "Adam", 1.1f),
+            DialogLine(2, "No literally, I asked ChatGPT for dating advice and it told me to touch grass.", "Nicole", 1.15f),
+            DialogLine(6, "That's actually solid advice though, no cap.", "Michael", 1.05f),
+            DialogLine(3, "Michael you're literally defending the robots right now, sus behavior.", "Sarah", 1.1f),
+            DialogLine(9, "I mean statistically AI will replace like 80% of jobs by 2030.", "George", 1.0f),
+            DialogLine(4, "George bestie, you're not helping the vibe right now.", "Sky", 1.15f),
+            DialogLine(10, "But like imagine AI doing all the boring stuff while we just chill?", "Lewis", 1.05f),
+            DialogLine(0, "Lewis that's what they want you to think, it's giving Skynet energy.", "Bella", 1.1f),
+            DialogLine(5, "Skynet? Bella you need to stop watching old movies.", "Adam", 1.05f),
+            DialogLine(2, "Okay but real talk, AI art is kind of stealing from actual artists.", "Nicole", 1.0f),
+            DialogLine(6, "Fair point, but it's also making art accessible to everyone.", "Michael", 1.05f),
+            DialogLine(3, "Accessible? More like putting people out of jobs, periodt.", "Sarah", 1.1f),
+            DialogLine(9, "The industrial revolution had the same arguments honestly.", "George", 1.0f),
+            DialogLine(4, "Yeah but the industrial revolution didn't have robots writing TikTok scripts.", "Sky", 1.15f),
+            DialogLine(10, "Wait AI can write TikTok scripts? That's lowkey fire.", "Lewis", 1.1f),
+            DialogLine(0, "Lewis I'm gonna need you to pick a side here.", "Bella", 1.15f),
+            DialogLine(5, "There are no sides, we're just having a conversation.", "Adam", 1.0f),
+            DialogLine(2, "Adam that's such a centrist take, I can't with you right now.", "Nicole", 1.15f),
+            DialogLine(6, "Can we all agree AI making our coffee is a W though?", "Michael", 1.1f),
+            DialogLine(3, "Michael the coffee machine isn't AI, it's just a machine.", "Sarah", 1.05f),
+            DialogLine(9, "Technically any programmed automation could be considered basic AI.", "George", 1.0f),
+            DialogLine(4, "George please stop being smart for like two seconds.", "Sky", 1.2f),
+            DialogLine(10, "So bottom line, are we team human or team robot?", "Lewis", 1.05f),
+            DialogLine(0, "Team human obviously, I'm not about to betray my species.", "Bella", 1.1f),
+            DialogLine(5, "I'm team coexistence, we can vibe with the bots.", "Adam", 1.05f),
+            DialogLine(2, "That's it, Adam is officially a robot spy, confirmed.", "Nicole", 1.2f),
+            DialogLine(6, "This whole debate is unhinged and I love it.", "Michael", 1.1f)
         )
     }
 
-    // Auto-scroll to current line
     LaunchedEffect(currentLineIndex) {
         if (currentLineIndex >= 0) {
             listState.animateScrollToItem(
-                index = currentLineIndex, scrollOffset = -200
+                index = currentLineIndex,
+                scrollOffset = -300
             )
         }
     }
 
-    Scaffold(
-        topBar = {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        MaterialTheme.colorScheme.surface,
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+                    )
+                )
+            )
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
             TopAppBar(
                 title = {
                     Column {
                         Text(
-                            "Live Conversation", style = MaterialTheme.typography.titleLarge
+                            "Live Conversation",
+                            style = MaterialTheme.typography.titleLarge.copy(
+                                fontWeight = FontWeight.Bold
+                            )
                         )
                         if (isPlaying) {
                             Text(
-                                "Playing...",
+                                "Now playing...",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
                             )
                         }
                     }
-                }, colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer,
-                    titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = Color.Transparent
                 )
             )
-        }) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-        ) {
+
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                modifier = Modifier
+                    .fillMaxSize()
+                    .weight(1f),
+                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(32.dp)
             ) {
                 itemsIndexed(conversation) { index, line ->
-                    DialogCard(
+                    LyricsStyleDialogLine(
                         line = line,
                         isActive = index == currentLineIndex,
-                        isPast = index < currentLineIndex
+                        isPast = index < currentLineIndex,
+                        isFuture = index > currentLineIndex,
+                        progress = if (index == currentLineIndex) currentProgress.value else 0f
                     )
                 }
 
                 item {
-                    Spacer(modifier = Modifier.height(80.dp))
+                    Spacer(modifier = Modifier.height(120.dp))
                 }
             }
+        }
 
-            // Floating Action Buttons
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                FloatingActionButton(
-                    onClick = {
-                        if (isPlaying) {
-                            onStop()
+        FloatingActionButton(
+            onClick = {
+                if (isPlaying) {
+                    onStop()
+                    isPlaying = false
+                    currentLineIndex = -1
+                } else {
+                    isPlaying = true
+                    scope.launch {
+                        try {
+                            onPlayConversation(conversation) { index ->
+                                currentLineIndex = index
+                            }
+                        } finally {
                             isPlaying = false
                             currentLineIndex = -1
-                        } else {
-                            isPlaying = true
-                            scope.launch {
-                                try {
-                                    onPlayConversation(conversation) { index ->
-                                        currentLineIndex = index
-                                    }
-                                } finally {
-                                    isPlaying = false
-                                    currentLineIndex = -1
-                                }
-                            }
                         }
-                    },
-                    modifier = Modifier.weight(1f),
-                    containerColor = if (isPlaying) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.primary
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 24.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
-                            contentDescription = if (isPlaying) "Stop" else "Play"
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (isPlaying) "Stop" else "Play Conversation",
-                            style = MaterialTheme.typography.labelLarge
-                        )
                     }
                 }
-            }
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 32.dp)
+                .size(72.dp),
+            containerColor = if (isPlaying)
+                MaterialTheme.colorScheme.error
+            else
+                MaterialTheme.colorScheme.primary,
+            shape = CircleShape
+        ) {
+            Icon(
+                imageVector = if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow,
+                contentDescription = if (isPlaying) "Stop" else "Play",
+                modifier = Modifier.size(32.dp)
+            )
         }
     }
 }
 
 @Composable
-fun DialogCard(
-    line: DialogLine, isActive: Boolean, isPast: Boolean
+fun LyricsStyleDialogLine(
+    line: DialogLine,
+    isActive: Boolean,
+    isPast: Boolean,
+    isFuture: Boolean,
+    progress: Float
 ) {
     val scale by animateFloatAsState(
-        targetValue = if (isActive) 1.05f else 1f, animationSpec = spring(
-            dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessLow
-        ), label = "scale"
-    )
-
-    val containerColor by animateColorAsState(
         targetValue = when {
-            isActive -> MaterialTheme.colorScheme.primaryContainer
-            isPast -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-            else -> MaterialTheme.colorScheme.surface
-        }, label = "containerColor"
+            isActive -> 0.94f
+            isPast -> 0.96f
+            else -> 0.94f
+        },
+        animationSpec = spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessHigh
+        ),
+        label = "scale"
     )
 
-    Card(
+    val alpha by animateFloatAsState(
+        targetValue = when {
+            isActive -> 1f
+            isPast -> 0.35f
+            else -> 0.48f
+        },
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "alpha"
+    )
+
+    val blur by animateFloatAsState(
+        targetValue = if (isActive) 0f else if (isFuture) 2f else 2.5f,
+        animationSpec = tween(200, easing = FastOutSlowInEasing),
+        label = "blur"
+    )
+
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .scale(scale), colors = CardDefaults.cardColors(
-            containerColor = containerColor
-        ), elevation = CardDefaults.cardElevation(
-            defaultElevation = if (isActive) 8.dp else 2.dp
-        ), shape = RoundedCornerShape(16.dp)
+            .scale(scale)
+            .alpha(alpha)
+            .blur(blur.dp),
+        horizontalAlignment = if (isActive) Alignment.CenterHorizontally else Alignment.Start
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(bottom = 6.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = line.speakerName,
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = if (isActive) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                )
-
-                AnimatedVisibility(
-                    visible = isActive, enter = scaleIn() + fadeIn(), exit = scaleOut() + fadeOut()
+            if (isActive) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary)
                 ) {
+                    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+                    val pulseScale by infiniteTransition.animateFloat(
+                        initialValue = 1f,
+                        targetValue = 1.6f,
+                        animationSpec = infiniteRepeatable(
+                            animation = tween(550, easing = FastOutSlowInEasing),
+                            repeatMode = RepeatMode.Reverse
+                        ),
+                        label = "pulse"
+                    )
                     Box(
                         modifier = Modifier
-                            .size(8.dp)
+                            .fillMaxSize()
+                            .scale(pulseScale)
                             .background(
-                                MaterialTheme.colorScheme.primary, shape = RoundedCornerShape(50)
+                                MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                                CircleShape
                             )
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = line.speakerName,
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Medium,
+                    fontSize = if (isActive) 13.sp else 11.sp
+                ),
+                color = if (isActive)
+                    MaterialTheme.colorScheme.primary
+                else
+                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+        }
 
+        Box(
+            modifier = Modifier.fillMaxWidth()
+        ) {
             Text(
                 text = line.text,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = if (isActive) FontWeight.SemiBold else FontWeight.Normal,
+                    fontSize = when {
+                        isActive -> 26.sp
+                        isPast -> 19.sp
+                        else -> 20.sp
+                    },
+                    lineHeight = when {
+                        isActive -> 34.sp
+                        else -> 26.sp
+                    }
+                ),
+                textAlign = if (isActive) TextAlign.Center else TextAlign.Start,
                 color = when {
-                    isActive -> MaterialTheme.colorScheme.onPrimaryContainer
-                    isPast -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    else -> MaterialTheme.colorScheme.onSurface
+                    isActive -> MaterialTheme.colorScheme.primary
+                    isPast -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+                    else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f)
                 },
                 modifier = Modifier.fillMaxWidth()
             )
+        }
 
-            if (isActive) {
-                Spacer(modifier = Modifier.height(12.dp))
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(3.dp),
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
+        if (isActive) {
+            Spacer(modifier = Modifier.height(14.dp))
+
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth(0.7f)
+                    .height(3.dp)
+                    .clip(RoundedCornerShape(1.5.dp))
+                    .align(Alignment.CenterHorizontally),
+                color = MaterialTheme.colorScheme.primary,
+                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+            )
         }
     }
 }
