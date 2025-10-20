@@ -5,7 +5,6 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
-import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -342,7 +341,7 @@ class GenerationService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "GenerationService created")
-        startForeground(1, buildNotification("LLM Engine ready"))
+        startForeground(1, buildNotification())
     }
 
     override fun onDestroy() {
@@ -368,22 +367,20 @@ class GenerationService : Service() {
     }
 
     /* Notification helper */
-    private fun buildNotification(content: String): Notification {
+    private fun buildNotification(): Notification {
         val chId = "ai_core_service"
         val mgr = getSystemService(NotificationManager::class.java)
 
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val ch = NotificationChannel(
-                chId,
-                "AI Core Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
-            mgr.createNotificationChannel(ch)
-        }
+        val ch = NotificationChannel(
+            chId,
+            "AI Core Service",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        mgr.createNotificationChannel(ch)
 
         return NotificationCompat.Builder(this, chId)
             .setContentTitle("AI Core Service")
-            .setContentText(content)
+            .setContentText("LLM Engine ready...")
             .setSmallIcon(IconCompat.createWithResource(this, R.drawable.privicy))
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)
