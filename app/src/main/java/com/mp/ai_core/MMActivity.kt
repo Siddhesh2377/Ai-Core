@@ -44,7 +44,7 @@ class MMActivity : ComponentActivity() {
         var errorMsg by remember { mutableStateOf("") }
 
         val modelPath = "/storage/emulated/0/Download/LFM2-VL-450M-Q4_0.gguf"
-        val mmprojPath = "/storage/emulated/0/Download/mmproj-LFM2-VL-450M-Q8_0.gguf"
+        val mmprojPath = "/storage/emulated/0/Download/mmproj-LFM2-VL-450M-F16.gguf"
         val imageFile = File("/storage/emulated/0/Download/ANIME-ENVIROMENT-WALLPAPER-4K.jpg")
 
         Scaffold(
