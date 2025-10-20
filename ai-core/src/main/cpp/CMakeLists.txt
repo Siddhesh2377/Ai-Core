@@ -12,8 +12,14 @@ add_compile_definitions(GGML_VULKAN=0)
 # ------------------------------------------------------------------
 # 2) llama.cpp sub-project
 # ------------------------------------------------------------------
-include_directories(/home/home/dev/AI/llama.cpp/src)
+include_directories(/home/home/dev/AI/llama.cpp)
 add_subdirectory(/home/home/dev/AI/llama.cpp build-llama)
+
+add_library(mm_model STATIC IMPORTED)
+set_target_properties(mm_model PROPERTIES IMPORTED_LOCATION
+        /home/home/dev/AI/llama.cpp/build-android-vulkan/bin/libmtmd.so
+)
+
 
 # ------------------------------------------------------------------
 # 3) Vulkan C++ headers (vulkan-hpp interface)
@@ -29,6 +35,11 @@ target_link_libraries(llama PRIVATE vulkanhpp_iface)
 # ------------------------------------------------------------------
 add_library(${CMAKE_PROJECT_NAME} SHARED
         ai_core.cpp
+        cpu_helper.cpp
+)
+
+add_library(mm_ai_core SHARED
+        mm-ai-core.cpp
         cpu_helper.cpp
 )
 
@@ -57,6 +68,15 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         PRIVATE android
         PRIVATE log
         PRIVATE ${VULKAN_LIB}
+)
+
+target_link_libraries(mm_ai_core
+        PRIVATE llama
+        PRIVATE common
+        PRIVATE cpufeatures
+        PRIVATE android
+        PRIVATE log
+        PRIVATE mm_model
 )
 
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type")

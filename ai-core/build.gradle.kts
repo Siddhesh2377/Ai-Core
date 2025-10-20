@@ -19,7 +19,7 @@ android {
         consumerProguardFiles("proguard-rules.pro")
 
         ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
+            abiFilters += listOf("arm64-v8a")
         }
 
         externalNativeBuild {
@@ -31,8 +31,6 @@ android {
                 arguments += "-DGGML_LLAMAFILE=ON"
                 arguments += "-DGGML_PAGE_SIZE=16384"
 
-
-                arguments += "-DGGML_VULKAN=OFF"
                 arguments += "-DGGML_USE_OPENCL=OFF"
                 arguments += "-DGGML_OPENCL_EMBED_KERNELS=OFF"
                 arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=OFF"

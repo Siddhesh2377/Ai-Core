@@ -52,6 +52,7 @@ android {
 
 dependencies {
     implementation(project(":ai-core"))
+    implementation("io.coil-kt:coil-compose:2.7.0")
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.material.icons)
     implementation(libs.androidx.appcompat)

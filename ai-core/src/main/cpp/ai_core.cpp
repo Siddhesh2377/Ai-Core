@@ -14,8 +14,8 @@
 
 #include "llama.h"
 #include "cpu_helper.h"
-#include <llama-mmap.h>
-#include "llama-io.h"
+#include <src/llama-mmap.h>
+#include "src/llama-io.h"
 #include "ggml-backend.h"
 
 #if defined(__ANDROID__)
