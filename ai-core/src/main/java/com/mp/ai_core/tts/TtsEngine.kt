@@ -205,11 +205,6 @@ object TtsEngine {
     private fun initTts(context: Context) {
         assets = context.assets
 
-        if (dataDir != null) {
-            val newDir = copyDataDir(context, dataDir!!)
-            dataDir = "$newDir/$dataDir"
-        }
-
         val config = getOfflineTtsConfig(
             modelDir = modelDir!!,
             modelName = modelName ?: "",
@@ -224,7 +219,7 @@ object TtsEngine {
             isKitten = isKitten,
         )
 
-        tts = OfflineTts(assetManager = assets, config = config)
+        tts = OfflineTts(config = config)
     }
 
 
