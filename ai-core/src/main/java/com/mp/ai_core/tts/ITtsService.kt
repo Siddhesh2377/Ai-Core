@@ -10,7 +10,7 @@ interface ITtsService {
     /**
      * Initialize the TTS engine with configuration
      */
-    suspend fun initialize(config: TtsConfig)
+    suspend fun initialize(config: TtsConfig): Int
 
     /**
      * Generate audio with streaming samples

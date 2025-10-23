@@ -46,7 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.k2fsa.sherpa.onnx.OfflineStream
 import com.k2fsa.sherpa.onnx.WaveReader
-import com.mp.ai_core.stt.SimulateStreamingAsr
 import com.mp.ai_core.ui.theme.AiCoreTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
