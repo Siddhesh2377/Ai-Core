@@ -1,54 +1,84 @@
 package com.mp.ai_core
 
-import android.Manifest
-import android.app.Activity
-import android.content.*
-import android.net.Uri
-import android.os.*
+import android.content.ComponentName
+import android.content.Intent
+import android.content.ServiceConnection
+import android.os.Bundle
+import android.os.Environment
+import android.os.IBinder
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import com.mp.ai_core.text.GenerationService
 import com.mp.ai_core.text.IGenerationCallback
 import com.mp.ai_core.text.IGenerationService
 import com.mp.ai_core.ui.theme.AiCoreTheme
-import kotlinx.coroutines.*
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
 import kotlin.math.min
-import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
 
-    /** -------- Service binding --------------------------------------------------- */
-    var iService: IGenerationService? = null
+    private val _serviceState = MutableStateFlow<IGenerationService?>(null)
+    private val serviceState: StateFlow<IGenerationService?>
+        get() = _serviceState.asStateFlow()
+
     private lateinit var serviceConnection: ServiceConnection
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
+        enableEdgeToEdge()
         requestPermissionsIfNeeded()
 
         // Start the foreground service (UI will bind to it)
         val startIntent = Intent(this, GenerationService::class.java)
         ContextCompat.startForegroundService(this, startIntent)
 
-        setContent { AiCoreTheme { MainScreen() } }
+        setContent {
+            AiCoreTheme {
+                MainScreen(serviceState = serviceState)
+            }
+        }
     }
 
     override fun onStart() {
@@ -61,16 +91,15 @@ class MainActivity : ComponentActivity() {
         unbindService()
     }
 
-    /** -------- Service helpers ------------------------------------------------- */
     private fun bindService() {
         serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                iService = binder as? IGenerationService
+                _serviceState.value = binder as? IGenerationService
                 doInitialisation()
             }
 
             override fun onServiceDisconnected(name: ComponentName?) {
-                iService = null
+                _serviceState.value = null
             }
         }
         val bindIntent = Intent(this, GenerationService::class.java)
@@ -81,20 +110,15 @@ class MainActivity : ComponentActivity() {
         try {
             unbindService(serviceConnection)
         } catch (e: IllegalArgumentException) {
-            // service not bound – ignore
+            // Service not bound – ignore
         }
     }
 
-    /** -------- Initialise the model once we are bound ----------------------------- */
     private fun doInitialisation() {
-        // 1️⃣  Path to the generation model (user copies it somewhere they can read)
         val generationModelPath = "/storage/emulated/0/Download/Kodify-Nano-2.0.Q8_0.gguf"
-
-        // 2️⃣  Copy the embedding model from the assets folder to a temporary file
         copyAssetToTemp("embedding.gguf")
 
-        // 3️⃣  Tell the service that it now has the inbound file paths
-        val ok = iService?.loadModel(
+        val ok = _serviceState.value?.loadModel(
             generationModelPath,
             min(Runtime.getRuntime().availableProcessors(), 8),
             0,
@@ -111,7 +135,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** -------- Asset → temp file helper ---------------------------------------- */
     private fun copyAssetToTemp(assetName: String): File {
         val tempFile = File(cacheDir, assetName)
         assets.open(assetName).use { input ->
@@ -122,138 +145,197 @@ class MainActivity : ComponentActivity() {
         return tempFile
     }
 
-    /** -------- Permission handling ---------------------------------------------- */
     private fun requestPermissionsIfNeeded() {
-        // API ≥ 30 → need the MANAGE_EXTERNAL_STORAGE permission
         if (!Environment.isExternalStorageManager()) {
             startActivity(
                 Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
                     data = "package:$packageName".toUri()
-                }
-            )
+                })
         }
     }
 }
 
-/** --------------------------------------------------------------------------- */
-/** Compose UI – very small demo                                                        */
-/** --------------------------------------------------------------------------- */
+fun logDebug(message: String) {
+    android.util.Log.d("AiCoreDemo", message)
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen() {
-    // Grab the service – it might still be null until the binding completes
+fun MainScreen(serviceState: StateFlow<IGenerationService?>) {
     val coroutineScope = rememberCoroutineScope()
-    val service = LocalActivity.current?.let { act ->
-        @Suppress("DEPRECATION") remember { (act as? MainActivity)?.iService }
-    }
+    val service by serviceState.collectAsState(initial = null)
 
-    var prompt by remember { mutableStateOf("") }
+    var prompt by remember { mutableStateOf("Hello") }
     var output by remember { mutableStateOf("") }
     var generating by remember { mutableStateOf(false) }
-
     var embedText by remember { mutableStateOf("") }
     var embedVector by remember { mutableStateOf<FloatArray?>(null) }
 
+    val context = LocalContext.current
+
     Scaffold(topBar = {
-        TopAppBar(title = { Text("Ai Core Demo") })
+        TopAppBar(
+            title = { Text("Ai Core Demo", style = MaterialTheme.typography.headlineLarge) })
     }, content = { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .padding(16.dp)
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // ---------- Text generation ----------
-            Text("Text Generation", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = prompt,
-                onValueChange = { prompt = it },
-                label = { Text("Prompt") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
+            service?.let { service ->
+                // Text Generation Section
+                Text("Text Generation", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = prompt,
+                    onValueChange = { prompt = it },
+                    label = { Text("Prompt", style = MaterialTheme.typography.bodyMedium) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Button(
+                        onClick = {
+                            if (prompt.isNotBlank()) {
+                                generating = true
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    logDebug("Generate button clicked with prompt: $prompt")
+                                    service.generate(
+                                        prompt, 128, "{}", object : IGenerationCallback {
+                                            override fun onToken(token: String) {
+                                                logDebug("Generated token: $token")
+                                                coroutineScope.launch(Dispatchers.Main) {
+                                                    output += token
+                                                }
+                                            }
+
+                                            override fun onToolCall(
+                                                name: String,
+                                                payload: String
+                                            ) {
+                                                logDebug("Tool call: $name, payload: $payload")
+                                            }
+
+                                            override fun onError(error: String) {
+                                                logDebug("Error: $error")
+                                                coroutineScope.launch(Dispatchers.Main) {
+                                                    output += "\n[ERROR] $error"
+                                                }
+                                            }
+
+                                            override fun onDone() {
+                                                logDebug("Generation done")
+                                                coroutineScope.launch(Dispatchers.Main) {
+                                                    generating = false
+                                                }
+                                            }
+
+                                            override fun asBinder(): IBinder? {
+                                                return null
+                                            }
+                                        })
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Prompt cannot be empty",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        },
+                        enabled = !generating && service != null,
+                        modifier = Modifier.weight(1f)
+                    ) { Text("Generate", style = MaterialTheme.typography.labelLarge) }
+
+                    Button(
+                        onClick = {
+                            generating = false
+                            coroutineScope.launch(Dispatchers.IO) {
+                                service.stopGeneration()
+                                logDebug("Stop button clicked")
+                            }
+                        }, enabled = generating, modifier = Modifier.weight(1f)
+                    ) { Text("Stop", style = MaterialTheme.typography.labelLarge) }
+                }
+
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp)
+                    ) {
+                        Text("Output:", style = MaterialTheme.typography.titleSmall)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = buildAnnotatedString { append(output) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(8.dp),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
+
+                // Embedding Section
+                Text("Text Embedding", style = MaterialTheme.typography.titleMedium)
+                OutlinedTextField(
+                    value = embedText,
+                    onValueChange = { embedText = it },
+                    label = { Text("Text", style = MaterialTheme.typography.bodyMedium) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = MaterialTheme.typography.bodyMedium
+                )
+                Button (
                     onClick = {
-                        generating = true
                         coroutineScope.launch(Dispatchers.IO) {
-                            service?.generate(
-                                prompt, 128, "{}", object : IGenerationCallback {
-                                    override fun onToken(token: String) {
-                                        coroutineScope.launch(Dispatchers.Main) {
-                                            output += token
-                                        }
-                                    }
-
-                                    override fun onToolCall(name: String, payload: String) {
-                                        // not used in this demo
-                                    }
-
-                                    override fun onError(error: String) {
-                                        coroutineScope.launch(Dispatchers.Main) {
-                                            output += "\n[ERROR] $error"
-                                        }
-                                    }
-
-                                    override fun onDone() {}
-                                    override fun asBinder(): IBinder? {
-                                        return null
-                                    }
-                                })
+                            logDebug("Embed button clicked with text: $embedText")
+                            val vec = service.embed(embedText)
                             coroutineScope.launch(Dispatchers.Main) {
-                                generating = false
+                                embedVector = vec
+                                logDebug("Embed vector: ${vec?.joinToString(", ")}")
                             }
                         }
-                    }, enabled = !generating && service != null
-                ) { Text("Generate") }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ){
+                    Text("Embed")
+                }
 
-                Button(
-                    onClick = { service?.stopGeneration() }, enabled = generating
-                ) { Text("Stop") }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Text("Output:", style = MaterialTheme.typography.bodyMedium)
-            Text(
-                buildAnnotatedString { append(output) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFFF0F0F0))
-                    .padding(8.dp)
-            )
-
-            // ---------- Embedding ----------
-            Spacer(Modifier.height(24.dp))
-            Text("Text Embedding", style = MaterialTheme.typography.titleMedium)
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = embedText,
-                onValueChange = { embedText = it },
-                label = { Text("Text") },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = {
-                    coroutineScope.launch(Dispatchers.IO) {
-                        val vec = service?.embed(embedText)
-                        coroutineScope.launch(Dispatchers.Main) {
-                            embedVector = vec
+                embedVector?.let { vec ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp)
+                        ) {
+                            Text(
+                                "Vector size: ${vec.size}",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = vec.joinToString(
+                                    prefix = "[", postfix = "]", separator = ", "
+                                ) { "%.4f".format(it) },
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
-                }, enabled = embedText.isNotBlank() && service != null
-            ) { Text("Embed") }
-
-            Spacer(Modifier.height(8.dp))
-            embedVector?.let { vec ->
-                Text("Vector size: ${vec.size}")
-                Text(
-                    vec.joinToString(
-                        prefix = "[", postfix = "]", separator = ", "
-                    ) { "%0.4f".format(it) })
+                }
+            } ?: run {
+                Text("Service unavailable", style = MaterialTheme.typography.bodyLarge)
             }
         }
     })

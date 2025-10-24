@@ -14,7 +14,7 @@
  *    - state persistence helpers (shared) – reuse the same functions
  *============================================================*/
 
-#include "model_state.h"
+#include "state/model_state.h"
 #include "utils/jni_utils.h"
 #include "utils/utf8_utils.h"
 

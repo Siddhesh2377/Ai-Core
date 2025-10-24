@@ -40,7 +40,7 @@ class EmbedLib private constructor() {
     companion object {
         private const val TAG = "EmbeddingJNI"
 
-        init { System.loadLibrary("ai_core_embed") }
+        init { System.loadLibrary("ai_core") }
 
         /**
          * Return the one and only JNI wrapper instance.

@@ -12,7 +12,7 @@
  *  - Completely thread‑safe via a single mutex for init/cleanup.
  *============================================================*/
 
-#include "model_state.h"
+#include "state/model_state.h"
 #include "utils/jni_utils.h"
 #include "utils/utf8_utils.h"
 #include "chat/chat_template.h"
@@ -21,6 +21,7 @@
 #include "ggml-backend.h"
 #include "cpu/cpu_helper.h"
 #include "utils/logger.h"
+#include "state/global_state.h"
 #include "tool_calling/tool_call_state.h"
 #include <sstream>
 #include <algorithm>
@@ -32,7 +33,6 @@
 /*  --------------------------------------------------------------
  *      Global state and guard
  *  -------------------------------------------------------------- */
-static ModelState g_state;
 static std::mutex g_init_mtx;                  // guards init/release
 static std::atomic<bool> g_stop_requested{false};
 

@@ -1,5 +1,5 @@
 #include "model_state.h"
-#include "utils/logger.h"
+#include "../utils/logger.h"
 
 #include <cstring>      // memcpy
 #include <algorithm>

@@ -46,4 +46,19 @@ interface IGenerationService {
 
     /* ---------- Metadata ---------- */
     String getModelInfo();
+
+    boolean loadMultimodalProjector(String mmprojPath, int threads);
+    void unloadMultimodalProjector();
+    boolean isMultimodalReady();
+    String getMultimodalInfo();
+
+    boolean generateWithImage(
+        String prompt,
+        in byte[] imageData,
+        int imageWidth,
+        int imageHeight,
+        int maxTokens,
+        String toolCallingJson,
+        IGenerationCallback callback
+    );
 }

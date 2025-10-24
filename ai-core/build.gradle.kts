@@ -30,10 +30,6 @@ android {
                 arguments += "-DGGML_LLAMAFILE=ON"
                 arguments += "-DGGML_PAGE_SIZE=16384"
 
-                arguments += "-DGGML_USE_OPENCL=OFF"
-                arguments += "-DGGML_OPENCL_EMBED_KERNELS=OFF"
-                arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=OFF"
-                arguments += "-DGGML_OPENCL_DOWNLOAD_KERNELS=OFF"
                 arguments += "-DCMAKE_BUILD_TYPE=Release"
                 cppFlags += listOf()
             }
