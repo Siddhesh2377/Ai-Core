@@ -24,26 +24,13 @@ android {
 
         externalNativeBuild {
             cmake {
-                // Core settings
                 arguments += "-DGGML_USE_BLAS=ON"
                 arguments += "-DLLAMA_CURL=OFF"
                 arguments += "-DLLAMA_BUILD_COMMON=ON"
                 arguments += "-DGGML_LLAMAFILE=ON"
                 arguments += "-DGGML_PAGE_SIZE=16384"
 
-                arguments += "-DGGML_USE_OPENCL=OFF"
-                arguments += "-DGGML_OPENCL_EMBED_KERNELS=OFF"
-                arguments += "-DGGML_OPENCL_USE_ADRENO_KERNELS=OFF"
-                arguments += "-DGGML_OPENCL_DOWNLOAD_KERNELS=OFF"
-
-
-                // OpenCL paths (CMake will append ANDROID_ABI)
-//                arguments += "-DOpenCL_INCLUDE_DIR=${projectDir}/opencl/include"
-//                arguments += "-DOPENCL_LIB_BASE=${projectDir}/opencl/lib"
-
-                // Build type
                 arguments += "-DCMAKE_BUILD_TYPE=Release"
-
                 cppFlags += listOf()
             }
         }
@@ -58,7 +45,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

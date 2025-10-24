@@ -2,394 +2,228 @@ package com.mp.ai_core
 
 import android.util.Log
 import androidx.annotation.Keep
-import com.mp.ai_core.services.IGenerationCallback
+import com.mp.ai_core.text.IGenerationCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.receiveAsFlow
-import kotlin.math.sqrt
 
-const val TAG = "MicroAI"
+// Keep the tag consistent with the previous code
+private const val TAG = "MicroAI"
 
+/**
+ * A singleton‑style wrapper around the native inference library.
+ *
+ * Only the *generation* model is kept – all embedding‑related
+ * methods and instances have been removed.  The coroutines below
+ * are deliberately light‑weight: we use a dedicated CoroutineScope
+ * with a single SupervisorJob and `Dispatchers.Default/IO` for
+ * heavy work.  No blocking `when { }` or heavy `Thread` creates.
+ *
+ * NOTE: The companion’s `getInstance()` is the only public
+ * factory.  It guarantees that a single native instance
+ * lives per JVM, and that it is cleaned up on `releaseAll()`.
+ */
 class NativeLib private constructor(private val instanceId: String) {
+
+    // -----------------------------------------------------------------
+    //  Companion – factory & instance cache
+    // -----------------------------------------------------------------
     companion object {
         private val instances = mutableMapOf<String, NativeLib>()
 
-        init {
-            System.loadLibrary("ai_core")
+        init { System.loadLibrary("ai_core") }   // one-time NDK load
+
+        /**
+         * Returns the long‑lived generation instance.
+         */
+        fun getInstance(): NativeLib =
+            instances.getOrPut("generation") { NativeLib("generation") }
+
+        /**
+         * Releases a particular instance – frees the native context.
+         * It *does not* destroy the singleton mix‑in from the NDK.
+         */
+        fun releaseInstance(id: String) {
+            instances[id]?.let { it.nativeRelease(); instances.remove(id) }
         }
 
-        fun getGenerationInstance(): NativeLib {
-            return instances.getOrPut("generation") {
-                NativeLib("generation")
-            }
-        }
-
-        fun getGenerationServiceInstance(): NativeLib =
-            instances.getOrPut("service") { NativeLib("service") }
-
-        fun getEmbeddingInstance(): NativeLib {
-            return instances.getOrPut("embedding") {
-                NativeLib("embedding")
-            }
-        }
-
-        fun releaseInstance(instanceId: String) {
-            instances[instanceId]?.let { instance ->
-                instance.nativeRelease()
-                instances.remove(instanceId)
-            }
-        }
-
-        fun releaseAllInstances() {
-            instances.values.forEach { it.nativeRelease() }
-            instances.clear()
-        }
+        /** Tear down *all* living instances – e.g. when the app exits. */
+        fun releaseAll() { instances.values.forEach { it.nativeRelease() }; instances.clear() }
     }
 
-    private var isMainModelInitialized = false
-    private var isEmbeddingModelInitialized = false
-    /* ----------------------------------------------------------------
-             *  State‑size helpers
-             * ---------------------------------------------------------------- */
-    external fun nativeGetStateSize(): Long   // returns `llama_state_get_size(ctx)`
-
-    /* ----------------------------------------------------------------
-     *  State‑data helpers
-     * ---------------------------------------------------------------- */
-    /**
-     * Restores the state from the supplied byte array.
-     *
-     * @param state the full state buffer returned by [nativeGetStateData]
-     * @return true  if the buffer was accepted completely, false otherwise
-     */
+    // -------------------------------------------------------------
+    //  External natives
+    // -------------------------------------------------------------
+    /** NDK helpers – exported by the C++ side.  All wrap the same context. */
+    external fun nativeGetStateSize(): Long
     external fun nativeLoadStateData(state: ByteArray): Boolean
-
-    /**
-     * Reads the entire state into a new byte array.
-     *
-     * @return the state buffer, or `null` if there's no active context
-     */
     external fun nativeGetStateData(): ByteArray?
-
-    /* ----------------------------------------------------------------
-     *  Session file helpers
-     * ---------------------------------------------------------------- */
-    /**
-     * Loads a *session* file that contains the prompt and KV cache.
-     *
-     * @param path the file path in the filesystem
-     * @return true  on success, false on error / unsupported file
-     */
     external fun nativeLoadStateFile(path: String): Boolean
-
-    /**
-     * Persists the current prompt + KV cache into a session file.
-     *
-     * @param path the destination file path
-     * @return true  on success, false on failure
-     */
     external fun nativeSaveStateFile(path: String): Boolean
-    fun initModel(
-        path: String,
-        threads: Int = Runtime.getRuntime().availableProcessors() / 2,
-        gpuLayers: Int = 0,
-        useMMAP: Boolean = true,
-        useMLOCK: Boolean = false,
-        ctxSize: Int = 4096,
-        temp: Float = 0.7f,
-        topK: Int = 20,
-        topP: Float = 0.9f,
-        minP: Float = 0.0f
-    ): Boolean {
-        // Only release this instance, not all instances
-        nativeRelease()
-        return try {
-            val ok = nativeInit(
-                path, threads, gpuLayers, useMMAP, useMLOCK,
-                ctxSize, temp, topK, topP, minP
-            )
-            if (ok) {
-                isMainModelInitialized = true
-                isEmbeddingModelInitialized = false
-                Log.i("NativeLib-$instanceId", "Main model initialized: $path")
-            } else {
-                Log.e("NativeLib-$instanceId", "Main model initialization failed: $path")
-            }
-            ok
-        } catch (t: Throwable) {
-            Log.e("NativeLib-$instanceId", "Main model init error", t)
-            false
-        }
-    }
-
-    fun initEmbeddingModel(
-        path: String,
-        threads: Int = 4,
-        gpuLayers: Int = 0,
-        useMMAP: Boolean = true,
-        ctxSize: Int = 512
-    ): Boolean {
-        nativeRelease()
-        Log.d("NativeLib-$instanceId", "Initializing embedding model: $path")
-        return try {
-            val ok = nativeInitForEmbeddings(
-                path, threads, gpuLayers, useMMAP, ctxSize
-            )
-            if (ok) {
-                isEmbeddingModelInitialized = true
-                isMainModelInitialized = false
-                Log.i("NativeLib-$instanceId", "Embedding model initialized successfully")
-            } else {
-                Log.e("NativeLib-$instanceId", "Embedding model initialization failed: $path")
-            }
-            ok
-        } catch (t: Throwable) {
-            Log.e("NativeLib-$instanceId", "Embedding model init error", t)
-            false
-        }
-    }
-
-    // Add method to check model state
-    fun isGenerationReady(): Boolean = isMainModelInitialized
-    fun isEmbeddingReady(): Boolean = isEmbeddingModelInitialized
-
-    // Other external functions remain the same
-    external fun nativeInit(
-        path: String,
-        threads: Int,
-        gpuLayers: Int,
-        useMMAP: Boolean,
-        useMLOCK: Boolean,
-        ctxSize: Int,
-        temp: Float,
-        topK: Int,
-        topP: Float,
-        minP: Float
-    ): Boolean
-
-    external fun llamaPrintTimings()
-
     external fun nativeRelease(): Boolean
     external fun nativeSetChatTemplate(template: String)
-    external fun nativeInitForEmbeddings(
-        path: String,
-        jthreads: Int,
-        nGpuLayers: Int,
-        useMMAP: Boolean,
-        nCtx: Int
-    ): Boolean
-    external fun nativeGenerateStream(
-        prompt: String,
-        maxTokens: Int,
-        callback: StreamCallback
-    ): Boolean
-    external fun embed(text: String): FloatArray?
     external fun nativeSetToolsJson(toolsJson: String)
     external fun nativeSetSystemPrompt(prompt: String)
     external fun nativeGetModelInfo(): String
     external fun nativeStopGeneration()
+    external fun nativeGenerateStream(prompt: String,
+                                      maxTokens: Int,
+                                      callback: StreamCallback): Boolean
 
-    fun setSystemPrompt(prompt: String) = nativeSetSystemPrompt(prompt)
+    /** Native init‑fn that reflects the *simpler* C++ signature. */
+    external fun nativeInit(path: String,
+                            threads: Int,
+                            ctxSize: Int,
+                            temp: Float,
+                            topK: Int,
+                            topP: Float,
+                            minP: Float): Boolean
 
+    // -------------------------------------------------------------
+    //  State flags – keep them local (no static global weak refs)
+    // -------------------------------------------------------------
+    private var isModelInitialized = false
+
+    // -------------------------------------------------------------
+    //  Initialisation helpers
+    // -------------------------------------------------------------
+    /**
+     * Bootstraps an inference model.  Only calls the one‑argument
+     * nativeInit; everything else (GPU, mmap, etc.) is hard‑wired
+     * to the CPU‑only path in C++.
+     */
+    @JvmOverloads
+    fun init(path: String,
+             threads: Int = Runtime.getRuntime().availableProcessors() / 2,
+             ctxSize: Int = 4096,
+             temp: Float = 0.7f,
+             topK: Int = 20,
+             topP: Float = 0.9f,
+             minP: Float = 0.0f): Boolean {
+        nativeRelease()   // graceful cleanup of any pre‑existing ctx
+        return try {
+            val ok = nativeInit(path, threads, ctxSize, temp, topK, topP, minP)
+            if (ok) {
+                isModelInitialized = true
+                Log.i("$instanceId.nn", "Model initialised: $path")
+            } else {
+                Log.e("$instanceId.nn", "Model init failed: $path")
+            }
+            ok
+        } catch (t: Throwable) {
+            Log.e("$instanceId.nn", "init error", t); false
+        }
+    }
+
+    fun isReady() = isModelInitialized
+
+    // -------------------------------------------------------------
+    //  High‑level generation – backed by coroutines & a Channel
+    // -------------------------------------------------------------
     suspend fun generateStreaming(
         prompt: String,
         maxTokens: Int = 512,
         callback: IGenerationCallback,
-        toolsJson: String = "",
+        toolsJson: String = ""
     ) {
-        // Guard: model present?
-        val modelInfo = runCatching { nativeGetModelInfo() }.getOrNull()
-        if (modelInfo.isNullOrEmpty()) {
-            val err = "No model loaded. Please call initModel() first."
-            Log.e(TAG, err)
-            callback.onError(err)
+        // Quick guard – can be omitted if you trust callers
+        if (!isReady()) {
+            callback.onError("Model not initialised – call init() first")
             return
         }
 
-        // Enable/disable tools for this turn
-        if (toolsJson.isNotEmpty()) nativeSetToolsJson(toolsJson) else nativeSetToolsJson("")
+        // Set/clear tool JSON for this turn
+        nativeSetToolsJson(toolsJson.ifEmpty { "" })
 
-        val tokenCh = Channel<String>(capacity = 256)
-        val batchPeriodMs = 35L
+        // Channel that passes raw tokens from the JNI layer to the UI
+        val ch = Channel<String>(capacity = 256)
+        val batchMs = 35L
+        val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-        coroutineScope {
-            val batcherJob = launch(Dispatchers.Default) {
-                val sb = StringBuilder()
-                var lastFlush = System.nanoTime()
+        coroutineScope.launch {
+            // ---- Batching that runs on a background thread ----
+            val sb = StringBuilder()
+            var lastFlush = System.nanoTime()
 
-                fun flush(force: Boolean = false) {
-                    if (sb.isNotEmpty() && (force || (System.nanoTime() - lastFlush) / 1_000_000 >= batchPeriodMs)) {
-                        val chunk = sb.toString()
-                        sb.setLength(0)
-                        lastFlush = System.nanoTime()
-
-                        launch(Dispatchers.Main.immediate) {
-                            val cleanToken = chunk
-                                .replace("[PAD]", "")
-                                .replace(Regex("\\[unused\\d+]"), "")
-                            if (cleanToken.isNotEmpty()) {
-                                launch(Dispatchers.Main) {
-                                    callback.onToken(cleanToken)
-                                }
-                            }
-                        }
+            suspend fun flush (force: Boolean) {
+                if (sb.isNotEmpty() &&
+                    (force || (System.nanoTime() - lastFlush) / 1_000_000L >= batchMs)
+                ) {
+                    val chunk = sb.toString()
+                    sb.setLength(0)
+                    lastFlush = System.nanoTime()
+                    withContext(Dispatchers.Main.immediate) {
+                        // Clean token – commonly `[PAD]` and `[unusedX]` are useless
+                        val clean = chunk.replace("[PAD]", "")
+                            .replace(Regex("\\[unused\\d+]"), "")
+                        if (clean.isNotBlank()) callback.onToken(clean)
                     }
-                }
-
-                try {
-                    for (tok in tokenCh) {
-                        sb.append(tok)
-                        flush(false)
-                    }
-                } finally {
-                    flush(true)
                 }
             }
 
-            val cb = object : StreamCallback {
-                override fun onToken(token: String) {
-                    if (!tokenCh.trySend(token).isSuccess) {
-                        Log.w(TAG, "Token dropped due to backpressure")
-                    }
+            // Consume the channel
+            try {
+                for (token in ch) {
+                    sb.append(token)
+                    flush(false)
                 }
-
-                override fun onToolCall(name: String, argsJson: String) {
-                    launch(Dispatchers.Main.immediate) {
-                        callback.onToolCall(name, argsJson)
-                    }
-                }
-
-                override fun onDone() {
-                    tokenCh.close()
-                }
-
-                override fun onError(message: String) {
-                    launch(Dispatchers.Main.immediate) { onError(message) }
-                    tokenCh.close()
-                }
+                flush(true)   // one last flush
+            } catch (e: Throwable) {
+                Log.e(TAG, "Channel error", e)
+                callback.onError(e.localizedMessage ?: "Channel error")
             }
-
-            val parentJob = launch(Dispatchers.IO) {
-                try {
-                    val success = nativeGenerateStream(prompt, maxTokens, cb)
-                    if (!success) {
-                        throw IllegalStateException("nativeGenerateStream returned false")
-                    }
-                } catch (t: Throwable) {
-                    Log.e(TAG, "nativeGenerateStream error", t)
-                    withContext(Dispatchers.Main.immediate) { callback.onError(t.message ?: "Native error") }
-                } finally {
-                    tokenCh.close()
-                }
-            }
-
-            parentJob.join()
-            batcherJob.cancel()
-            batcherJob.join()
-            withContext(Dispatchers.Main.immediate) { callback.onDone() }
         }
+
+        // -----------------------------------------------
+        //  JNI side – feed tokens to the channel
+        // -----------------------------------------------
+        val cb = object : StreamCallback {
+            override fun onToken(tok: String) {
+                // `trySend` is non‑blocking; if buffer is full we silently drop
+                // this token.  The normal flow down the channel gives us backpressure
+                // if we run out of callers.
+                ch.trySend(tok).isSuccess
+            }
+
+            override fun onToolCall(name: String, argsJson: String) {
+                // Jump to UI thread – caller may use dispatchers.AFTER_EVENT
+                CoroutineScope(Dispatchers.Main.immediate).launch { callback.onToolCall(name, argsJson) }
+            }
+
+            override fun onDone() { ch.close() }
+            override fun onError(msg: String) { ch.close(); callback.onError(msg) }
+        }
+
+        // Run the JNI call on IO – it is blocking until model finishes
+        val parent = coroutineScope.launch(Dispatchers.IO) {
+            val ok = nativeGenerateStream(prompt, maxTokens, cb)
+            if (!ok) callback.onError("nativeGenerateStream returned false")
+        }
+
+        // Wait for the flow to finish – we cancel the batcher afterwards
+        parent.join()
+        coroutineScope.cancel()
+        callback.onDone()
     }
 
+    // -------------------------------------------------------------
+    //  Helper public methods – they are thin wrappers so we keep
+    //  them in a single place but they are trivial
+    // -------------------------------------------------------------
+    fun setSystemPrompt(prompt: String) = nativeSetSystemPrompt(prompt)
+    fun setChatTemplate(template: String) = nativeSetChatTemplate(template)
+    fun setToolsJson(toolsJson: String) = nativeSetToolsJson(toolsJson)
+    fun stop() = nativeStopGeneration()
 }
 
+/**
+ * Lightweight callback the native layer uses to push tokens and tool calls
+ * back to the Kotlin side.  Methods are intentionally minimal – that is
+ * also what the C++ code expects.
+ */
 @Keep
 interface StreamCallback {
     fun onToken(token: String)
     fun onToolCall(name: String, argsJson: String)
     fun onDone()
     fun onError(message: String)
-}
-
-class EmbeddingManager {
-    companion object {
-        @Volatile
-        private var instance: EmbeddingManager? = null
-
-        fun getInstance(): EmbeddingManager {
-            return instance ?: synchronized(this) {
-                instance ?: EmbeddingManager().also { instance = it }
-            }
-        }
-    }
-
-    private val embeddingLib = NativeLib.getEmbeddingInstance()
-    private var initialized = false
-    private var embeddingDim = -1
-
-    suspend fun initializeEmbedding(modelPath: String): Result<Unit> = withContext(Dispatchers.IO) {
-        try {
-            Log.d("EmbeddingManager", "Initializing embedding model: $modelPath")
-            val ok = embeddingLib.initEmbeddingModel(modelPath, 4, 0, true, 512)
-            if (!ok) {
-                Log.e("EmbeddingManager", "Failed to initialize embedding model: $modelPath")
-                return@withContext Result.failure(Exception("Failed to initialize embedding model"))
-            }
-
-            // Warmup
-            val warmup = embeddingLib.embed("warmup")
-            if (warmup == null || warmup.isEmpty()) {
-                Log.e("EmbeddingManager", "Warmup failed")
-                return@withContext Result.failure(Exception("Warmup failed"))
-            }
-
-            embeddingDim = warmup.size
-            initialized = true
-            Log.i("EmbeddingManager", "Embedding model ready (dim=$embeddingDim)")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e("EmbeddingManager", "Initialization error", e)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getEmbedding(text: String): Result<FloatArray> = withContext(Dispatchers.Default) {
-        if (!initialized) {
-            return@withContext Result.failure(Exception("Embedding model not initialized"))
-        }
-        try {
-            val embedding = embeddingLib.embed(text)
-            if (embedding != null && embedding.isNotEmpty()) {
-                Result.success(embedding)
-            } else {
-                Result.failure(Exception("Empty embedding returned"))
-            }
-        } catch (e: Exception) {
-            Log.e("EmbeddingManager", "Error generating embedding", e)
-            Result.failure(e)
-        }
-    }
-
-    suspend fun getEmbeddings(
-        texts: List<String>,
-    ): List<Result<FloatArray>> = withContext(Dispatchers.Default) {
-        texts.map { text ->
-            getEmbedding(text)
-        }
-    }
-
-    fun cosineSimilarity(embedding1: FloatArray, embedding2: FloatArray): Float {
-        if (embedding1.size != embedding2.size) {
-            Log.w("EmbeddingManager", "Embedding size mismatch: ${embedding1.size} vs ${embedding2.size}")
-            return 0f
-        }
-        var dotProduct = 0f
-        var norm1 = 0f
-        var norm2 = 0f
-        for (i in embedding1.indices) {
-            dotProduct += embedding1[i] * embedding2[i]
-            norm1 += embedding1[i] * embedding1[i]
-            norm2 += embedding2[i] * embedding2[i]
-        }
-        return if (norm1 == 0f || norm2 == 0f) {
-            0f
-        } else {
-            dotProduct / (sqrt(norm1) * sqrt(norm2))
-        }
-    }
-
-    fun release() {
-        initialized = false
-        Log.i("EmbeddingManager", "Embedding manager released")
-    }
 }
