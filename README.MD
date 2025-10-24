@@ -125,54 +125,6 @@ sh scripts/build_llama.sh /path/to/llama.cpp
 
 ---
 
-## 📚 Component README Overview
-
-Below are concise READMEs for each core component and helper module.  See the file tree for exact paths.
-
-### `ai_core.cpp`
-```markdown
-# ai_core.cpp – Native Text‑Generation API
-
-Provides the **Core** JNI functions to:
-- Load / release model (`nativeInit`, `nativeRelease`)
-- Dynamic configuration (system prompt, template, tools)
-- Streaming generation (`nativeGenerateStream`)
-- KV‑cache handling (`nativeClearMemory`, state persistence)
-- Diagnostics (`nativeGetModelInfo`, `llamaPrintTimings`)
-
-All calls are **CPU‑only** (`n_gpu_layers = 0`).  
-The file contains:  
-- `global_state` – singleton the whole library shares.  
-- `chat_template.cpp` – chat protocol / prompt rendering.  
-- `tool_call_state.cpp` – tool‑call parsing/accumulation.  
-Usage:  Call via `NativeLib` Kotlin wrapper.
-```
-
-### `ai_core_embed.cpp`
-```markdown
-# ai_core_embed.cpp – Embedding Engine
-
-Specialised JNI functions for computing *sentence embeddings*:
-- `nativeInitForEmbeddings` – initialise with `embeddings=true`.
-- `embed` – return a `float[]` of size `n_embd`.
-- State persistence (load / save KV‑cache) identical to `ai_core.cpp`.
-
-Designed for **blocking** single‑sentence encoding; all Kotlin callers wrap in `Dispatchers.IO`.
-```
-
-### `ai_core_mtmd.cpp`
-```markdown
-# ai_core_mtmd.cpp – Multimodal (Vision) Engine
-
-Adds image decoding + tokenisation for *vision* models:
-- `nativeInitMTMD` – initialise MX decoder (`mmproj.bin`).
-- `nativeGenerateStreamWithImage` – stream output for image + text.
-- `nativeLoadImageFromFile` – helper for debug tests.
-
-Uses **mtmd** library, which is linked by `CMakeLists.txt`.  
-Requires the base model (same as `ai_core.cpp`) to be loaded first.
-```
-
 ### Helper Sub‑packages
 
 | Path | Purpose |
