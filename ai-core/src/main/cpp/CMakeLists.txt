@@ -22,8 +22,8 @@ set(SRC_FILES
         src/model_state.cpp
         src/utils/jni_utils.cpp
         src/utils/utf8_utils.cpp
-        src/utils/chat_template.cpp
-        src/utils/tool_call_state.cpp
+        src/chat/chat_template.cpp
+        src/tool_calling/tool_call_state.cpp
         src/cpu/cpu_helper.cpp
 )
 # 4️⃣  Optional: the single header file `llama.h` from the sub‑project

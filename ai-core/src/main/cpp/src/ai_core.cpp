@@ -15,13 +15,13 @@
 #include "model_state.h"
 #include "utils/jni_utils.h"
 #include "utils/utf8_utils.h"
-#include "utils/chat_template.h"
+#include "chat/chat_template.h"
 
 #include "llama.h"
 #include "ggml-backend.h"
 #include "cpu/cpu_helper.h"
 #include "utils/logger.h"
-#include "utils/tool_call_state.h"
+#include "tool_calling/tool_call_state.h"
 #include <sstream>
 #include <algorithm>
 
