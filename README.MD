@@ -1,14 +1,12 @@
----
-
 ## 📦 `ai-core` – Android AI Core Library (AAR)
 
-```markdown
+
 # ai-core (Android Java/Kotlin AAR)
 
 > **ai-core** exposes a powerful, lightweight LLM stack (text‑generation, embeddings, multimodal vision) via a single self‑contained **AAR**.  
 > The binary contains the JNI glue + a native `ai_core.so` built with **llama.cpp** and **mtmd** (multimodal) back‑end.
 
----
+
 
 ## ✅ Features
 
