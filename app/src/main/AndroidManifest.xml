@@ -1,18 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- All‑files access (your own flag) -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
-
-    <!-- Foreground‑service support -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-
-    <!-- Required for Android 13+ when you want to show a toast or notification -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-feature android:glEsVersion="0x00030000" />
 
     <application
         android:allowBackup="true"
@@ -28,36 +23,20 @@
             android:name=".MainActivity"
             android:exported="true"
             android:theme="@style/Theme.AiCore">
-
-        </activity>
-
-        <activity
-            android:name=".TempActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AiCore">
-        </activity>
-
-        <activity
-            android:name=".MMActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AiCore">
-        </activity>
-
-        <activity
-            android:name=".STTActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AiCore">
-        </activity>
-
-        <activity
-            android:name=".TTSActivity"
-            android:exported="true"
-            android:theme="@style/Theme.AiCore">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".text.GenerationService"
+            tools:replace="android:exported"
+            android:exported="true"
+            android:foregroundServiceType="dataSync"
+            android:permission="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+            android:stopWithTask="false" />
 
     </application>
 </manifest>
