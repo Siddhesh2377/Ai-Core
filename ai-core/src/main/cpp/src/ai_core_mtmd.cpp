@@ -150,175 +150,225 @@ Java_com_mp_ai_1core_MtmdLib_nativeGetMTMDInfo(JNIEnv* env, jobject) {
     return env->NewStringUTF(json.str().c_str());
 }
 
-/*  --------------------------------------------------------------
- *      JNI: Generate with image input (streaming)
- *  -------------------------------------------------------------- */
-extern "C" JNIEXPORT jboolean JNICALL
+// ------------------------------------------------------------
+//  JNI: Generate with image input (streaming)
+// ------------------------------------------------------------
+extern "C"
+JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_MtmdLib_nativeGenerateStreamWithImage(
-        JNIEnv* env, jobject,
-        jstring jprompt,
-        jbyteArray jimage_data,
-        jint image_width,
-        jint image_height,
-        jint max_tokens,
-        jobject jcallback) {
-
+        JNIEnv*                env,
+        jobject,
+        jstring                jprompt,
+        jbyteArray             jimage_data,
+        jint                   image_width,
+        jint                   image_height,
+        jint                   max_tokens,
+        jobject                jcallback)
+{
+    /* --- 1️⃣  Sanity checks --------------------------------- */
     if (!g_state.is_ready() || !g_mtmd_state.is_ready()) {
-        jni::on_error(env, jcallback, "Model or MTMD not initialized");
+        jni::on_error(env, jcallback,
+                      "Model or MTMD not initialized");
         return JNI_FALSE;
     }
 
     if (!mtmd_support_vision(g_mtmd_state.ctx)) {
-        jni::on_error(env, jcallback, "Vision not supported by this model");
+        jni::on_error(env, jcallback,
+                      "Vision not supported by this model");
         return JNI_FALSE;
     }
 
-    // Prepare for new generation
+    /* --- 2️⃣  Prepare for new generation ------------------- */
     g_state.prepare_for_generation();
 
-    const std::string user_prompt = utf8::from_jstring(env, jprompt);
-    LOG_INFO("Multimodal generation: prompt_len=%zu, image=%dx%d",
-             user_prompt.size(), image_width, image_height);
+    /* --- 3️⃣  Read prompt and format it -------------------- */
+    std::string prompt_str = utf8::from_jstring(env, jprompt);
 
-    // Extract image data from Java byte array
+    // Add media marker if not present
+    std::string media_marker = mtmd_default_marker();
+    if (prompt_str.find(media_marker) == std::string::npos) {
+        // Place media marker at the beginning for vision models
+        prompt_str = media_marker + "\n" + prompt_str;
+    }
+
+    LOG_INFO("Multimodal: prompt_len=%zu, image=%dx%d, marker='%s'",
+             prompt_str.size(), image_width, image_height, media_marker.c_str());
+
+    /* --- 4️⃣  Pull raw RGB bytes from Java ----------------- */
     jbyte* img_bytes = env->GetByteArrayElements(jimage_data, nullptr);
-    jsize img_len = env->GetArrayLength(jimage_data);
+    jsize  img_len   = env->GetArrayLength(jimage_data);
 
-    if (!img_bytes || img_len <= 0) {
+    if (img_bytes == nullptr || img_len <= 0) {
         jni::on_error(env, jcallback, "Invalid image data");
         return JNI_FALSE;
     }
 
-    // Create bitmap from raw RGB data
-    // Expected format: RGBRGBRGB... (3 bytes per pixel)
+    // Verify image data size matches expected dimensions (RGB = 3 bytes per pixel)
+    jsize expected_size = static_cast<jsize>(image_width * image_height * 3);
+    if (img_len != expected_size) {
+        LOG_WARN("Image data size mismatch: got %d, expected %d", img_len, expected_size);
+    }
+
+    /* --- 5️⃣  Create mtmd_bitmap instance ------------------ */
     mtmd_bitmap* bitmap = mtmd_bitmap_init(
             static_cast<uint32_t>(image_width),
             static_cast<uint32_t>(image_height),
-            reinterpret_cast<const unsigned char*>(img_bytes)
-    );
+            reinterpret_cast<const unsigned char*>(img_bytes));
 
     env->ReleaseByteArrayElements(jimage_data, img_bytes, JNI_ABORT);
 
-    if (!bitmap) {
+    if (bitmap == nullptr) {
         jni::on_error(env, jcallback, "Failed to create bitmap");
         return JNI_FALSE;
     }
 
-    // Set optional bitmap ID for KV cache tracking
+    // Set unique ID for KV cache management
     mtmd_bitmap_set_id(bitmap, "user_image_0");
+    LOG_INFO("Bitmap created: %dx%d, id='user_image_0'",
+             mtmd_bitmap_get_nx(bitmap), mtmd_bitmap_get_ny(bitmap));
 
-    // Tokenize prompt with image
+    /* --- 6️⃣  Tokenize prompt + image --------------------- */
     mtmd_input_chunks* chunks = mtmd_input_chunks_init();
+    if (chunks == nullptr) {
+        mtmd_bitmap_free(bitmap);
+        jni::on_error(env, jcallback, "Failed to initialize input chunks");
+        return JNI_FALSE;
+    }
+
+    // Configure text input
+    // Note: add_special should typically be false if you've already formatted
+    // the prompt with chat template. Set to true if using raw text.
     mtmd_input_text text_input = {
-            user_prompt.c_str(),
-            true,  // add_special
-            true   // parse_special
+            const_cast<char*>(prompt_str.c_str()),
+            false,      // add_special - false since we're handling formatting
+            true        // parse_special - true to parse media markers
     };
 
-    const mtmd_bitmap* bitmaps[] = { bitmap };
-    int32_t tokenize_result = mtmd_tokenize(
+    const mtmd_bitmap* bm_arr[] = { bitmap };
+    int32_t tokenize_rc = mtmd_tokenize(
             g_mtmd_state.ctx,
             chunks,
             &text_input,
-            bitmaps,
-            1
-    );
+            bm_arr,
+            1);
 
-    if (tokenize_result != 0) {
-        LOG_ERROR("Tokenization failed with code: %d", tokenize_result);
+    if (tokenize_rc != 0) {
+        LOG_ERROR("Tokenization failed with code %d", tokenize_rc);
+        LOG_ERROR("Prompt: '%s'", prompt_str.c_str());
+        LOG_ERROR("Media marker: '%s'", media_marker.c_str());
         mtmd_bitmap_free(bitmap);
         mtmd_input_chunks_free(chunks);
         jni::on_error(env, jcallback, "Tokenization failed");
         return JNI_FALSE;
     }
 
-    // Get total token count
+    /* --- 7️⃣  Verify context space ------------------------ */
     size_t n_tokens = mtmd_helper_get_n_tokens(chunks);
     llama_pos n_pos = mtmd_helper_get_n_pos(chunks);
     LOG_INFO("Tokenized: %zu tokens, %d positions", n_tokens, n_pos);
 
-    // Check context size
     int32_t available = g_state.ctx_size - static_cast<int32_t>(n_tokens) - 8;
     if (available <= 0) {
+        LOG_ERROR("Context overflow: ctx_size=%d, n_tokens=%zu, available=%d",
+                  g_state.ctx_size, n_tokens, available);
         mtmd_bitmap_free(bitmap);
         mtmd_input_chunks_free(chunks);
-        jni::on_error(env, jcallback, "Context overflow - image+prompt too large");
+        jni::on_error(env, jcallback,
+                      "Context overflow – image+prompt too large");
         return JNI_TRUE;
     }
 
-    auto to_generate = static_cast<int32_t>(max_tokens > 0 ? max_tokens : 128);
+    /* --- 8️⃣  Determine tokens to generate ---------------- */
+    int32_t to_generate = static_cast<int32_t>(max_tokens > 0 ? max_tokens : 128);
     to_generate = std::min(to_generate, available);
+    LOG_INFO("Will generate up to %d tokens (available: %d)", to_generate, available);
 
-    // Evaluate chunks (image + text)
+    /* --- 9️⃣  Evaluate image + prompt chunks -------------- */
     llama_pos new_n_past = 0;
-    int32_t eval_result = mtmd_helper_eval_chunks(
-            g_mtmd_state.ctx,
-            g_state.ctx,
+    int32_t eval_rc = mtmd_helper_eval_chunks(
+            g_mtmd_state.ctx,       // vision context
+            g_state.ctx,            // text model context
             chunks,
-            0,              // n_past
-            0,              // seq_id
-            g_state.batch_size,
-            false,          // logits_last
-            &new_n_past
-    );
+            0,                      // n_past (starting position)
+            0,                      // seq_id
+            g_state.batch_size,     // n_batch
+            true,                   // logits_last - MUST be true for generation!
+            &new_n_past);           // output: position after evaluation
 
-    // Clean up
+// Cleanup bitmap and chunks - no longer needed
     mtmd_bitmap_free(bitmap);
     mtmd_input_chunks_free(chunks);
 
-    if (eval_result != 0) {
-        LOG_ERROR("Chunk evaluation failed with code: %d", eval_result);
-        jni::on_error(env, jcallback, "Failed to process image+text");
+// Check evaluation result
+// mtmd_helper_eval_chunks returns 0 on SUCCESS, non-zero on ERROR
+    if (eval_rc != 0) {  // ✅ CORRECT: non-zero is error
+        LOG_ERROR("Chunk evaluation failed with code %d", eval_rc);
+        jni::on_error(env, jcallback, "Failed to process image+prompt");
         return JNI_TRUE;
     }
 
-    LOG_INFO("Image+text processed, starting generation (n_past=%d)", new_n_past);
+    LOG_INFO("Image+prompt processed successfully (new_n_past=%d)", new_n_past);
+    LOG_INFO("Starting generation of %d tokens...", to_generate);
 
-    /* ---------------------------------------------------------
-     *  Generation loop - same as text-only
-     * -------------------------------------------------------- */
+    /* --- 🔟  Generation loop ----------------------------- */
+/* --- 🔟  Generation loop ----------------------------- */
     const llama_vocab* vocab = llama_model_get_vocab(g_state.model);
     llama_token eos = llama_vocab_eos(vocab);
     llama_token eot = llama_vocab_eot(vocab);
 
-    llama_batch single = llama_batch_init(1, 0, 1);
+// Initialize single-token batch for autoregressive decoding
+    llama_batch batch = llama_batch_init(1, 0, 1);
 
+    int generated_count = 0;
     for (int i = 0; i < to_generate; ++i) {
         // Sample next token
         llama_token tok = llama_sampler_sample(g_state.sampler, g_state.ctx, -1);
         llama_sampler_accept(g_state.sampler, tok);
 
-        if (tok == eos || tok == eot) break;
-
-        // Decode token
-        std::string piece = g_state.detokenize_single(tok);
-        jni::on_token(env, jcallback, piece);
-
-        // Prepare next batch
-        single.n_tokens = 1;
-        single.token[0] = tok;
-        single.pos[0] = new_n_past + i;
-        single.n_seq_id[0] = 1;
-        single.seq_id[0][0] = 0;
-        single.logits[0] = true;
-
-        if (llama_decode(g_state.ctx, single) != 0) {
-            jni::on_error(env, jcallback, "Decode failed during generation");
+        // Check for end-of-sequence
+        if (tok == eos || tok == eot) {
+            LOG_INFO("EOS reached after %d tokens", generated_count);
             break;
         }
 
+        // Detokenize and send to callback
+        std::string piece = g_state.detokenize_single(tok);
+        jni::on_token(env, jcallback, piece.c_str());
+        generated_count++;
+
+        // Prepare batch for next decode step (manual method)
+        batch.n_tokens = 1;
+        batch.token[0] = tok;
+        batch.pos[0] = new_n_past + i;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = true;
+
+        // Decode the token
+        int decode_rc = llama_decode(g_state.ctx, batch);
+        if (decode_rc != 0) {
+            LOG_ERROR("Decode failed with code %d at token %d", decode_rc, i);
+            jni::on_error(env, jcallback, "Decode failed");
+            break;
+        }
+
+        // Check for Java exceptions
         if (env->ExceptionCheck()) {
-            LOG_ERROR("Java exception during callback");
+            LOG_ERROR("Java callback threw exception");
             env->ExceptionClear();
             break;
         }
     }
 
-    llama_batch_free(single);
+// Cleanup
+    llama_batch_free(batch);
+
+// Flush any remaining UTF-8 data and signal completion
     utf8::flush_carry(env, jcallback);
     jni::on_done(env, jcallback);
 
-    LOG_INFO("Multimodal generation complete");
+    LOG_INFO("Multimodal generation completed (%d tokens generated)", generated_count);
+
     return JNI_TRUE;
 }
 
