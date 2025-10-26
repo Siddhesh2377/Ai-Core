@@ -125,6 +125,7 @@ class SherpaSTTClient(private val context: Context) {
     /**
      * Suspend version of connect
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     suspend fun connectAsync(): Boolean = suspendCancellableCoroutine { cont ->
         connect { success ->
             cont.resume(success) {}

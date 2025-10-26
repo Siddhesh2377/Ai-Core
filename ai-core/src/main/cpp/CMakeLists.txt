@@ -22,6 +22,7 @@ set(SRC_FILES
         src/ai_core.cpp
         src/ai_core_embed.cpp
         src/ai_core_mtmd.cpp
+        src/ai_core_state.cpp
         src/state/global_state.cpp
         src/state/model_state.cpp
         src/utils/jni_utils.cpp

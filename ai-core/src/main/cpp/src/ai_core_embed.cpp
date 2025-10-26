@@ -33,10 +33,8 @@ static std::mutex g_init_mtx;
  *      ENDEVMODE: initialise model for embeddings
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeInitForEmbeddings(JNIEnv* env, jobject,
-                                                      jstring jpath,
-                                                      jint jthreads,
-                                                      jint ctxSize) {
+Java_com_mp_ai_1core_EmbedLib_nativeInitForEmbeddings(JNIEnv *env, jobject, jstring jpath,
+                                                      jint jthreads, jint ctxSize) {
     std::lock_guard<std::mutex> lk(g_init_mtx);
     const std::string path = utf8::from_jstring(env, jpath);
     g_state.release();
@@ -44,8 +42,7 @@ Java_com_mp_ai_1core_EmbedLib_nativeInitForEmbeddings(JNIEnv* env, jobject,
 
     int phys = count_physical_cores();
     int nthreads = (jthreads > 0) ? static_cast<int>(jthreads) : phys;
-    LOG_INFO("Embedding init: model=%s, threads=%d, ctx=%d",
-             path.c_str(), nthreads, ctxSize);
+    LOG_INFO("Embedding init: model=%s, threads=%d, ctx=%d", path.c_str(), nthreads, ctxSize);
 
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;                  // CPU
@@ -82,13 +79,11 @@ Java_com_mp_ai_1core_EmbedLib_nativeInitForEmbeddings(JNIEnv* env, jobject,
     LOG_INFO("Embedding model initialised successfully");
     return JNI_TRUE;
 }
-
 /*  --------------------------------------------------------------
  *      EMBED: returns a float[] of size n_embd
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT jfloatArray JNICALL
-Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
-                                    jstring jtext) {
+Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv *env, jobject, jstring jtext) {
     if (!g_state.is_ready()) {
         LOG_ERROR("embed – model not initialised");
         return nullptr;
@@ -102,7 +97,7 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
 
     LOG_INFO("Embedding text (len %zu)", txt.size());
 
-    const llama_vocab* vocab = llama_model_get_vocab(g_state.model);
+    const llama_vocab *vocab = llama_model_get_vocab(g_state.model);
     if (!vocab) {
         LOG_ERROR("embed – failed to get vocab");
         return nullptr;
@@ -129,10 +124,10 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
 
     for (int i = 0; i < (int) toks.size(); ++i) {
         batch.token[i] = toks[i];
-        batch.pos[i]   = i;
+        batch.pos[i] = i;
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
-        batch.logits[i] = (i == (int)toks.size() - 1);   // only last token needs logits
+        batch.logits[i] = (i == (int) toks.size() - 1);   // only last token needs logits
     }
     batch.n_tokens = static_cast<int32_t>(toks.size());
 
@@ -146,7 +141,7 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
     llama_batch_free(batch);
 
     /* ---------- Grab embeddings ------------------------------------- */
-    const float* emb = llama_get_embeddings(g_state.ctx);
+    const float *emb = llama_get_embeddings(g_state.ctx);
     if (!emb) {
         LOG_ERROR("embed – llama_get_embeddings returned null");
         return nullptr;
@@ -158,7 +153,7 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
         LOG_ERROR("embed – failed to allocate Java float array");
         return nullptr;
     }
-    env->SetFloatArrayRegion(out, 0, n_embd, const_cast<float*>(emb));
+    env->SetFloatArrayRegion(out, 0, n_embd, const_cast<float *>(emb));
     if (env->ExceptionCheck()) {
         LOG_ERROR("embed – exception during SetFloatArrayRegion");
         env->ExceptionClear();
@@ -171,52 +166,7 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv* env, jobject,
  *      Re‑use the same helpers for release / state persistence
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeRelease(JNIEnv*, jobject) {
+Java_com_mp_ai_1core_EmbedLib_nativeRelease(JNIEnv *, jobject) {
     g_state.release();
     return JNI_TRUE;
-}
-
-// -----------------------------------------------------------------
-// State persistence wrappers – identical to the main module
-// -----------------------------------------------------------------
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeGetStateSize(JNIEnv*, jobject) {
-    return g_state.get_state_size();
-}
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeGetStateData(JNIEnv* env, jobject) {
-    jlong sz = g_state.get_state_size();
-    if (!sz) return nullptr;
-    jbyteArray arr = env->NewByteArray(static_cast<jsize>(sz));
-    if (!arr) return nullptr;
-    void* buf = env->GetByteArrayElements(arr, nullptr);
-    g_state.get_state_data(buf, static_cast<size_t>(sz));
-    env->ReleaseByteArrayElements(arr, (jbyte*)buf, 0);
-    return arr;
-}
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeLoadStateData(JNIEnv* env, jobject,
-                                                  jbyteArray arr) {
-    if (!arr) return JNI_FALSE;
-    jbyte* buf = env->GetByteArrayElements(arr, nullptr);
-    size_t sz  = static_cast<size_t>(env->GetArrayLength(arr));
-    bool ok = g_state.load_state_data(buf, sz);
-    env->ReleaseByteArrayElements(arr, buf, JNI_ABORT);
-    return ok ? JNI_TRUE : JNI_FALSE;
-}
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeSaveStateFile(JNIEnv* env, jobject,
-                                                  jstring jpath) {
-    const char* path = env->GetStringUTFChars(jpath, nullptr);
-    bool ok = llama_state_save_file(g_state.ctx, path, nullptr, 0);
-    env->ReleaseStringUTFChars(jpath, path);
-    return ok ? JNI_TRUE : JNI_FALSE;
-}
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_mp_ai_1core_EmbedLib_nativeLoadStateFile(JNIEnv* env, jobject,
-                                                  jstring jpath) {
-    const char* path = env->GetStringUTFChars(jpath, nullptr);
-    bool ok = llama_state_load_file(g_state.ctx, path, nullptr, 0, nullptr);
-    env->ReleaseStringUTFChars(jpath, path);
-    return ok ? JNI_TRUE : JNI_FALSE;
 }

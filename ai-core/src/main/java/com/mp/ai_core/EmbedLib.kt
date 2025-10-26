@@ -60,20 +60,7 @@ class EmbedLib private constructor() {
         nCtx: Int
     ): Boolean
 
-    /** Load a previous embedding session. */
-    external fun nativeLoadStateFile(path: String): Boolean
 
-    /** Save the current embedding session. */
-    external fun nativeSaveStateFile(path: String): Boolean
-
-    /** Return length of the current state buffer. */
-    external fun nativeGetStateSize(): Long
-
-    /** Return a copy of the state buffer or null. */
-    external fun nativeGetStateData(): ByteArray?
-
-    /** Replace the current state buffer with the supplied data. */
-    external fun nativeLoadStateData(state: ByteArray): Boolean
 
     /** Generate an embedding for a single string. */
     external fun embed(text: String): FloatArray?
@@ -124,27 +111,6 @@ class EmbedLib private constructor() {
             null
         }
     }
-
-    /**
-     * Save and load the embedding KV‑cache/session.
-     */
-    suspend fun saveSession(path: String): Boolean = withContext(Dispatchers.IO) {
-        try { nativeSaveStateFile(path) }
-        catch (t: Throwable) { Log.e(TAG, "saveSession error", t); false }
-    }
-
-    suspend fun loadSession(path: String): Boolean = withContext(Dispatchers.IO) {
-        try { nativeLoadStateFile(path) }
-        catch (t: Throwable) { Log.e(TAG, "loadSession error", t); false }
-    }
-
-    suspend fun getStateData(): ByteArray? = withContext(Dispatchers.IO) { nativeGetStateData() }
-    suspend fun loadStateData(state: ByteArray): Boolean = withContext(Dispatchers.IO) {
-        try { nativeLoadStateData(state) } catch (t: Throwable) {
-            Log.e(TAG, "loadStateData error", t); false
-        }
-    }
-    suspend fun getStateSize(): Long = withContext(Dispatchers.IO) { nativeGetStateSize() }
 
     /**
      * Safely free the embedded context – called when the app is
