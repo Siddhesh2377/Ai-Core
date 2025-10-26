@@ -230,6 +230,12 @@ class ModelSwapper(private val scope: CoroutineScope) {
         Log.i(TAG, "Generation stopped")
     }
 
+    fun stopVLMGeneration() {
+        if (isGenerating()) {
+            MtmdLib.getInstance().nativeStop()
+        }
+    }
+
     suspend fun embed(text: String): FloatArray? = withContext(Dispatchers.IO) {
         lock.withLock {
             if (currentEmbedPath == null) null

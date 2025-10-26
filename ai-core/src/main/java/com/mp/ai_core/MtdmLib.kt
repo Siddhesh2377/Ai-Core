@@ -32,6 +32,8 @@ class MtmdLib private constructor() {
     external fun nativeIsMTMDReady(): Boolean
     external fun nativeGetMTMDInfo(): String
 
+    external fun nativeStop()
+
     external fun nativeGenerateStreamWithImage(
         prompt: String,
         imageData: ByteArray,
