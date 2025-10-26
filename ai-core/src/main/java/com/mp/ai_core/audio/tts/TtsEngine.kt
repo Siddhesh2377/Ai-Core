@@ -4,9 +4,13 @@ import android.util.Log
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.getOfflineTtsConfig
 import com.mp.ai_core.services.IAudioCallback
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "TtsEngine"
@@ -26,7 +30,7 @@ class TtsEngine(private val scope: CoroutineScope) {
     ): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
             Log.d(TAG, "Initializing TTS: modelDir=$modelDir, modelName=$modelName")
-            
+
             if (tts != null) {
                 Log.w(TAG, "TTS already initialized, releasing old instance")
                 releaseUnsafe()
@@ -58,16 +62,16 @@ class TtsEngine(private val scope: CoroutineScope) {
         }
     }
 
-    suspend fun generate(text: String, speakerId: Int, callback: IAudioCallback) {
+    suspend fun generate(text: String, speakerId: Int, audioCallback: IAudioCallback) {
         if (!isReady()) {
-            withContext(Dispatchers.Main) { callback.onError("TTS not initialized") }
+            withContext(Dispatchers.Main) { audioCallback.onError("TTS not initialized") }
             return
         }
 
         generationJob = scope.launch(Dispatchers.IO) {
             lock.withLock {
                 val ttsInstance = tts ?: run {
-                    withContext(Dispatchers.Main) { callback.onError("TTS instance is null") }
+                    withContext(Dispatchers.Main) { audioCallback.onError("TTS instance is null") }
                     return@launch
                 }
 
@@ -76,12 +80,12 @@ class TtsEngine(private val scope: CoroutineScope) {
                     isStopped.set(false)
                     ttsInstance.currentSid = speakerId
 
-                    val audioCallback = { samples: FloatArray, progress: Float ->
-                        if (isStopped.get()) {
+                    fun callback(samples: FloatArray, progress: Float): Int {
+                       return if (isStopped.get()) {
                             0
                         } else {
                             try {
-                                callback.onAudioChunk(samples, progress)
+                                audioCallback.onAudioChunk(samples, progress)
                                 1
                             } catch (e: Exception) {
                                 Log.e(TAG, "Callback error", e)
@@ -90,15 +94,15 @@ class TtsEngine(private val scope: CoroutineScope) {
                         }
                     }
 
-                    ttsInstance.generateWithCallback(text, audioCallback)
-                    
+                    ttsInstance.generateWithCallback(text, callback = ::callback)
+
                     if (!isStopped.get()) {
-                        withContext(Dispatchers.Main) { callback.onComplete() }
+                        withContext(Dispatchers.Main) { audioCallback.onComplete() }
                         Log.i(TAG, "TTS generation completed")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "TTS generation error", e)
-                    withContext(Dispatchers.Main) { callback.onError("Generation failed: ${e.message}") }
+                    withContext(Dispatchers.Main) { audioCallback.onError("Generation failed: ${e.message}") }
                 }
             }
         }
