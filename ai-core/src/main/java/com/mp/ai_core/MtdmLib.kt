@@ -51,7 +51,7 @@ class MtmdLib private constructor() {
             return true
         }
 
-        val ok = nativeInitMTMD(mmprojPath, useGpu = false, nThreads)
+        val ok = nativeInitMTMD(mmprojPath, useGpu = true, nThreads)
         if (ok) {
             isInitialized = true
             Log.i("MtmdLib", "MTMD initialized: $mmprojPath")

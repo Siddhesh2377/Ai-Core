@@ -3,8 +3,12 @@ package com.mp.ai_core.text;
 import com.mp.ai_core.text.IGenerationCallback;
 
 interface IGenerationService {
-    /* ---------- Model Management ---------- */
-    boolean loadModel(
+    //Common
+    boolean isGenerating();
+    String getModelInfo();
+
+    //Text Generation Model
+    boolean loadTextGenerationModel(
         String path,
         int threads,
         int gpuLayers,
@@ -15,43 +19,35 @@ interface IGenerationService {
         float topP,
         float minP
     );
-
-    void unloadModel();
-
-    /* ---------- Generation ---------- */
-    boolean generate(
+    void unloadTextGenerationModel();
+    boolean generateText(
         String prompt,
         int maxTokens,
         String toolCallingJSON,
         IGenerationCallback callback
     );
-
-    void stopGeneration();
-    boolean isGenerating();
-
-    /* ---------- Configuration ---------- */
+    void stopTextGeneration();
     void setSystemPrompt(String prompt);
     void setChatTemplate(String template);
     void setToolsJson(String toolsJson);
 
-    /* ---------- State Management ---------- */
+    //State-Managment
     long getStateSize();
     byte[] getStateData();
     boolean loadStateData(in byte[] state);
     boolean saveStateFile(String filePath);
     boolean loadStateFile(String filePath);
 
-    /* ---------- Embedding ---------- */
+    //Embedding Model
+    boolean loadEmbedModel(String path, int threads, int ctxSize);
     float[] embed(String text);
+    void unLoadEmbeddingModel();
 
-    /* ---------- Metadata ---------- */
-    String getModelInfo();
-
+    //Multi-Model ( VLM )
     boolean loadMultimodalProjector(String mmprojPath, int threads);
     void unloadMultimodalProjector();
     boolean isMultimodalReady();
     String getMultimodalInfo();
-
     boolean generateWithImage(
         String prompt,
         in byte[] imageData,

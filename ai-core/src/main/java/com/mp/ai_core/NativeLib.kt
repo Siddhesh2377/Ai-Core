@@ -177,11 +177,11 @@ class NativeLib private constructor(private val instanceId: String) {
         //  JNI side – feed tokens to the channel
         // -----------------------------------------------
         val cb = object : StreamCallback {
-            override fun onToken(tok: String) {
+            override fun onToken(token: String) {
                 // `trySend` is non‑blocking; if buffer is full we silently drop
                 // this token.  The normal flow down the channel gives us backpressure
                 // if we run out of callers.
-                ch.trySend(tok).isSuccess
+                ch.trySend(token).isSuccess
             }
 
             override fun onToolCall(name: String, argsJson: String) {
@@ -190,7 +190,7 @@ class NativeLib private constructor(private val instanceId: String) {
             }
 
             override fun onDone() { ch.close() }
-            override fun onError(msg: String) { ch.close(); callback.onError(msg) }
+            override fun onError(message: String) { ch.close(); callback.onError(message) }
         }
 
         // Run the JNI call on IO – it is blocking until model finishes
