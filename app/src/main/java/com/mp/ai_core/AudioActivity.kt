@@ -47,9 +47,9 @@ class AudioActivity : ComponentActivity() {
                     "voices.bin",
                     "/storage/emulated/0/Download/audio/kokoro-en-v0_19/espeak-ng-data"
                 ) ?: false
-                sttReady.value = iAudioService?.initializeStt(
-                    "/storage/emulated/0/Download/audio/sherpa-onnx-whisper-tiny", 2, 4
-                ) ?: false
+//                sttReady.value = iAudioService?.initializeStt(
+//                    "/storage/emulated/0/Download/audio/sherpa-onnx-whisper-tiny", 2, 4
+//                ) ?: false
             } catch (e: RemoteException) {
                 Log.e(TAG, "RemoteException onServiceConnected", e)
             }

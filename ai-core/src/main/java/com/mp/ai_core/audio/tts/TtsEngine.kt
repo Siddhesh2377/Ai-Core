@@ -93,8 +93,17 @@ class TtsEngine(private val scope: CoroutineScope) {
                             }
                         }
                     }
-
-                    ttsInstance.generateWithCallback(text, callback = ::callback)
+                    try {
+                        // This call blocks until generation is complete
+                        ttsInstance.generateWithCallback(
+                            text = text,
+                            callback = ::callback
+                        )
+                        Log.i(TAG, "Audio generation completed")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error during audio generation", e)
+                        withContext(Dispatchers.Main) { audioCallback.onError(e.message ?: "Unknown error") }
+                    }
 
                     if (!isStopped.get()) {
                         withContext(Dispatchers.Main) { audioCallback.onComplete() }
