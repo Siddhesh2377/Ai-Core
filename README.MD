@@ -10,7 +10,7 @@
 
 ## ✅ Features
 
-<img src="res/Ai-Core-Arch.png" style="border-radius: 15px;" alt="architecture"> <img/>
+<img src="res/Ai-Core-Arch.png" alt="architecture">
 
 | Feature | Supported |
 |---------|-----------|
