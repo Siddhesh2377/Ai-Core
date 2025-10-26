@@ -1,6 +1,6 @@
-package com.mp.ai_core.text;
+package com.mp.ai_core.services;
 
-import com.mp.ai_core.text.IGenerationCallback;
+import com.mp.ai_core.services.IGenerationCallback;
 
 interface IGenerationService {
     //Common

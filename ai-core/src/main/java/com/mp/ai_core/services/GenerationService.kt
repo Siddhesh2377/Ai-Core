@@ -1,4 +1,4 @@
-package com.mp.ai_core.text
+package com.mp.ai_core.services
 
 import android.app.Notification
 import android.app.NotificationChannel

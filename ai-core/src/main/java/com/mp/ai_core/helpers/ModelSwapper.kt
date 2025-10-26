@@ -2,7 +2,7 @@ package com.mp.ai_core.helpers
 
 import android.util.Log
 import com.mp.ai_core.*
-import com.mp.ai_core.text.IGenerationCallback
+import com.mp.ai_core.services.IGenerationCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock

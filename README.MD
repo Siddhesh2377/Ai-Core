@@ -10,6 +10,8 @@
 
 ## ✅ Features
 
+<img src="res/Ai-Core-Arch.png" alt="architecture">
+
 | Feature | Supported |
 |---------|-----------|
 | **Text‑generation** | ✅ single‑threaded inference (CPU) via **NativeLib** |
