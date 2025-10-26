@@ -1,1 +1,0 @@
-/home/home/dev/AI/sherpa-onnx/android/SherpaOnnxSimulateStreamingAsr/app/src/main/java/com/k2fsa/sherpa/onnx/HomophoneReplacerConfig.kt

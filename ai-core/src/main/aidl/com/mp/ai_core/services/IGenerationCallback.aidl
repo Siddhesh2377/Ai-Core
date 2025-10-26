@@ -1,4 +1,4 @@
-package com.mp.ai_core.text;
+package com.mp.ai_core.services;
 
 interface IGenerationCallback {
     void onToken(in String token);

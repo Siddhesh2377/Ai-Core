@@ -53,9 +53,9 @@ import androidx.core.graphics.get
 import androidx.core.graphics.scale
 import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
-import com.mp.ai_core.text.GenerationService
-import com.mp.ai_core.text.IGenerationCallback
-import com.mp.ai_core.text.IGenerationService
+import com.mp.ai_core.services.GenerationService
+import com.mp.ai_core.services.IGenerationCallback
+import com.mp.ai_core.services.IGenerationService
 import com.mp.ai_core.ui.theme.AiCoreTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow

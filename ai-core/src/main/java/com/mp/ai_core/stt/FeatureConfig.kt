@@ -1,1 +1,0 @@
-/home/home/dev/AI/sherpa-onnx/sherpa-onnx/kotlin-api/FeatureConfig.kt

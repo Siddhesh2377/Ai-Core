@@ -2,7 +2,7 @@ package com.mp.ai_core
 
 import android.util.Log
 import androidx.annotation.Keep
-import com.mp.ai_core.text.IGenerationCallback
+import com.mp.ai_core.services.IGenerationCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 
