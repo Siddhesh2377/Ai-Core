@@ -115,37 +115,41 @@ Java_com_mp_ai_1core_EmbedLib_embed(JNIEnv *env, jobject, jstring jtext) {
         return nullptr;
     }
 
-    /* ---------- Build a single-token batch (all tokens processed) ----- */
+/* ---------- Build a batch (no logits) ----------------------------- */
     llama_batch batch = llama_batch_init(static_cast<int32_t>(toks.size()), 0, 1);
     if (!batch.token) {
         LOG_ERROR("embed – batch allocation failed");
         return nullptr;
     }
 
-    for (int i = 0; i < (int) toks.size(); ++i) {
+    for (int i = 0; i < (int)toks.size(); ++i) {
         batch.token[i] = toks[i];
         batch.pos[i] = i;
         batch.n_seq_id[i] = 1;
         batch.seq_id[i][0] = 0;
-        batch.logits[i] = (i == (int) toks.size() - 1);   // only last token needs logits
+        batch.logits[i] = false;    // 🚫 disable logits
     }
     batch.n_tokens = static_cast<int32_t>(toks.size());
 
-    /* ---------- Decode ---------------------------------------------- */
+/* ---------- Decode to produce embeddings --------------------------- */
+    if (auto mem = llama_get_memory(g_state.ctx); mem)
+        llama_memory_clear(mem, true);
+
     int rc = llama_decode(g_state.ctx, batch);
+    llama_batch_free(batch);
     if (rc != 0) {
         LOG_ERROR("embed – llama_decode returned %d", rc);
-        llama_batch_free(batch);
         return nullptr;
     }
-    llama_batch_free(batch);
 
-    /* ---------- Grab embeddings ------------------------------------- */
-    const float *emb = llama_get_embeddings(g_state.ctx);
+/* ---------- Fetch embeddings from sequence 0 ----------------------- */
+    const float *emb = llama_get_embeddings_seq(g_state.ctx, 0);
+    if (!emb) emb = llama_get_embeddings(g_state.ctx);
     if (!emb) {
-        LOG_ERROR("embed – llama_get_embeddings returned null");
+        LOG_ERROR("embed – embedding buffer is null (model may not support embeddings)");
         return nullptr;
     }
+
 
     int n_embd = llama_model_n_embd(g_state.model);
     jfloatArray out = env->NewFloatArray(n_embd);
