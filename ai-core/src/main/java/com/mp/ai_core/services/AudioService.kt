@@ -12,53 +12,39 @@ import androidx.core.graphics.drawable.IconCompat
 import com.mp.ai_core.R
 import com.mp.ai_core.audio.stt.STTEngine
 import com.mp.ai_core.audio.tts.TtsEngine
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import kotlinx.coroutines.future.asCompletableFuture
+import org.json.JSONObject
 
 private const val TAG = "AudioService"
 
 class AudioService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-
     private val ttsEngine = TtsEngine(scope)
     private val sttEngine = STTEngine()
 
-    // ----------------------------------------------------------------------------
-    // AIDL binding implementation
-    // ----------------------------------------------------------------------------
-    @OptIn(ExperimentalCoroutinesApi::class)
     private val binder = object : IAudioService.Stub() {
 
-        /* --------- TTS --------- */
+        //region TTS
+
         override fun initializeTts(
             modelDir: String,
             modelName: String,
             voices: String,
-            dataDir: String,
-        ): Boolean = runBlocking {
-            Log.d(TAG, "initializeTts: $modelDir/$modelName")
-            val d = CompletableDeferred<Boolean>()
+            dataDir: String
+        ): Boolean {
+            val deferred = CompletableDeferred<Boolean>()
             scope.launch {
-                d.complete(
-                    ttsEngine.initialize(
-                        modelDir, modelName, voices, dataDir
-                    )
+                deferred.complete(
+                    ttsEngine.initialize(modelDir, modelName, voices, dataDir)
                 )
             }
-            return@runBlocking d.await()
+            return deferred.asCompletableFuture().get()
         }
 
         override fun releaseTts() {
-            scope.launch {
-                ttsEngine.release()
-            }
+            scope.launch { ttsEngine.release() }
         }
 
         override fun isTtsReady(): Boolean = ttsEngine.isReady()
@@ -74,23 +60,21 @@ class AudioService : Service() {
         }
 
         override fun stopTts() {
-            scope.launch {
-                ttsEngine.stop()
-            }
+            scope.launch { ttsEngine.stop() }
         }
 
-        /* --------- STT --------- */
-        override fun initializeStt(modelDir: String, modelType: Int, numThreads: Int): Boolean = runBlocking {
-            Log.d(TAG, "initializeStt: $modelDir $modelType")
-            val d = CompletableDeferred<Boolean>()
+        //endregion
+
+        //region STT
+
+        override fun initializeStt(modelDir: String, modelType: Int, numThreads: Int): Boolean {
+            val deferred = CompletableDeferred<Boolean>()
             scope.launch {
-                d.complete(
-                    sttEngine.initialize(
-                        modelDir, modelType, null, numThreads
-                    ).isSuccess
+                deferred.complete(
+                    sttEngine.initialize(modelDir, modelType, null, numThreads).isSuccess
                 )
             }
-            return@runBlocking d.await()
+            return deferred.asCompletableFuture().get()
         }
 
         override fun releaseStt() {
@@ -101,9 +85,14 @@ class AudioService : Service() {
 
         override fun transcribeFile(filePath: String, sampleRate: Int, callback: ISttCallback) {
             scope.launch {
-                val result = sttEngine.transcribeFile(filePath).getOrElse { "ERROR: ${it.message}" }
-                if (result.startsWith("ERROR:")) callback.onError(result)
-                else callback.onResult(result)
+                val result = sttEngine.transcribeFile(filePath)
+                    .getOrElse { "ERROR: ${it.message}" }
+
+                if (result.startsWith("ERROR:")) {
+                    callback.onError(result)
+                } else {
+                    callback.onResult(result)
+                }
             }
         }
 
@@ -115,33 +104,48 @@ class AudioService : Service() {
             scope.launch {
                 val result = sttEngine.transcribeSamples(samples, sampleRate)
                     .getOrElse { "ERROR: ${it.message}" }
-                if (result.startsWith("ERROR:")) callback.onError(result)
-                else callback.onResult(result)
+
+                if (result.startsWith("ERROR:")) {
+                    callback.onError(result)
+                } else {
+                    callback.onResult(result)
+                }
             }
         }
-
 
         override fun getActiveStreamCount(): Int = sttEngine.activeStreamCount()
 
         override fun getCurrentModelType(): Int = sttEngine.getCurrentModelType()
 
-        override fun getAudioInfo(): String = buildString {
-            append("TTS Ready: ${ttsEngine.isReady()}\n")
-            if (ttsEngine.isReady()) {
-                append("Sample Rate: ${ttsEngine.getSampleRate()}\n")
-                append("Speakers: ${ttsEngine.getNumSpeakers()}\n")
-            }
-            append("STT Ready: ${sttEngine.isReady()}\n")
-            if (sttEngine.isReady()) {
-                append("Active Streams: ${sttEngine.activeStreamCount()}\n")
-                append("Model Type: ${sttEngine.getCurrentModelType()}")
-            }
+        //endregion
+
+        //region Info
+
+        override fun getAudioInfo(): String {
+            val json = JSONObject()
+
+            json.put("tts", JSONObject().apply {
+                put("ready", ttsEngine.isReady())
+                if (ttsEngine.isReady()) {
+                    put("sample_rate", ttsEngine.getSampleRate())
+                    put("speakers", ttsEngine.getNumSpeakers())
+                }
+            })
+
+            json.put("stt", JSONObject().apply {
+                put("ready", sttEngine.isReady())
+                if (sttEngine.isReady()) {
+                    put("active_streams", sttEngine.activeStreamCount())
+                    put("model_type", sttEngine.getCurrentModelType())
+                }
+            })
+
+            return json.toString()
         }
+
+        //endregion
     }
 
-    // ----------------------------------------------------------------------------
-    // Service lifecycle
-    // ----------------------------------------------------------------------------
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onCreate() {
@@ -152,24 +156,32 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        ttsEngine.stop()
+        scope.launch {
+            ttsEngine.stop()
+            sttEngine.release()
+        }
         scope.cancel()
-        scope.launch { sttEngine.release() }
         Log.i(TAG, "AudioService destroyed")
     }
 
-    // ----------------------------------------------------------------------------
-    // Notification helper
-    // ----------------------------------------------------------------------------
     private fun buildNotification(): Notification {
-        val chId = "audio_service"
-        val mgr = getSystemService(NotificationManager::class.java)
-        val ch = NotificationChannel(chId, "Audio Service", NotificationManager.IMPORTANCE_LOW)
-        mgr.createNotificationChannel(ch)
+        val channelId = "audio_service"
+        val manager = getSystemService(NotificationManager::class.java)
+        val channel = NotificationChannel(
+            channelId,
+            "Audio Service",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        manager.createNotificationChannel(channel)
 
-        return NotificationCompat.Builder(this, chId).setContentTitle("Audio Service")
+        return NotificationCompat.Builder(this, channelId)
+            .setContentTitle("Audio Service")
             .setContentText("TTS/STT Engine ready")
             .setSmallIcon(IconCompat.createWithResource(this, R.drawable.privicy))
-            .setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).build()
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setOngoing(true)
+            .build()
     }
+
+    private fun <T> Deferred<T>.await(): T = kotlinx.coroutines.runBlocking { await() }
 }

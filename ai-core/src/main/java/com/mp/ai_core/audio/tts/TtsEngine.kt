@@ -80,12 +80,12 @@ class TtsEngine(private val scope: CoroutineScope) {
                     isStopped.set(false)
                     ttsInstance.currentSid = speakerId
 
-                    fun callback(samples: FloatArray, progress: Float): Int {
+                    fun callback(samples: FloatArray): Int {
                        return if (isStopped.get()) {
                             0
                         } else {
                             try {
-                                audioCallback.onAudioChunk(samples, progress)
+                                audioCallback.onAudioChunk(samples)
                                 1
                             } catch (e: Exception) {
                                 Log.e(TAG, "Callback error", e)
