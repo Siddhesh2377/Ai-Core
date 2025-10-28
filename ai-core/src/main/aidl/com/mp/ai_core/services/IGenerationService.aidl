@@ -57,4 +57,5 @@ interface IGenerationService {
         String toolCallingJson,
         IGenerationCallback callback
     );
+    void stopVLMGeneration();
 }

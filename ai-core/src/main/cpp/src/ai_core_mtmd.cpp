@@ -51,6 +51,7 @@ struct MTMDState {
 
 static MTMDState g_mtmd_state;
 static std::mutex g_mtmd_mtx;
+static bool stop_requested = false;
 
 /*  --------------------------------------------------------------
  *      JNI: Initialize multimodal context
@@ -321,6 +322,12 @@ Java_com_mp_ai_1core_MtmdLib_nativeGenerateStreamWithImage(
 
     int generated_count = 0;
     for (int i = 0; i < to_generate; ++i) {
+        // Check if stop was requested
+        if (stop_requested) {
+            LOG_INFO("Generation stopped by user request after %d tokens", generated_count);
+            break;
+        }
+
         // Sample next token
         llama_token tok = llama_sampler_sample(g_state.sampler, g_state.ctx, -1);
         llama_sampler_accept(g_state.sampler, tok);
@@ -336,7 +343,7 @@ Java_com_mp_ai_1core_MtmdLib_nativeGenerateStreamWithImage(
         jni::on_token(env, jcallback, piece.c_str());
         generated_count++;
 
-        // Prepare batch for next decode step (manual method)
+        // Prepare batch for next decode step
         batch.n_tokens = 1;
         batch.token[0] = tok;
         batch.pos[0] = new_n_past + i;
@@ -419,4 +426,14 @@ Java_com_mp_ai_1core_MtmdLib_nativeLoadImageFromFile(
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_mp_ai_1core_MtmdLib_nativeGetMediaMarker(JNIEnv* env, jobject) {
     return env->NewStringUTF(mtmd_default_marker());
+}
+
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_mp_ai_1core_MtmdLib_nativeStop(JNIEnv*, jobject) {
+    // No need for mutex here - atomic bool in g_state handles thread safety
+    if (g_state.is_ready()) {
+        stop_requested = true;
+        LOG_INFO("Stop requested for multimodal generation");
+    }
 }

@@ -1,3 +1,6 @@
--keep class com.mp.ai_core.StreamCallback { *; }
--keep class com.mp.ai_core.NativeLib { *; }
--keepnames class com.mp.ai_core.tts.TtsConfig { *; }
+-keep class com.mp.ai_core.* { *; }
+-keep class com.mp.ai_core.audio.stt.* { *; }
+-keep class com.mp.ai_core.audio.tts.* { *; }
+-keep class com.mp.ai_core.helpers.audio.* { *; }
+-keep class com.mp.ai_core.helpers.* { *; }
+-keep class com.mp.ai_core.services.* { *; }

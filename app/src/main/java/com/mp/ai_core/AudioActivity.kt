@@ -186,8 +186,8 @@ class AudioActivity : ComponentActivity() {
         coroutineScope.launch {
             iAudioService?.generateTts(
                 ttsText.value, 0, object : IAudioCallback.Stub() {
-                    override fun onAudioChunk(samples: FloatArray?, progress: Float) {
-                        Log.d(TAG, "TTS Progress: $progress")
+                    override fun onAudioChunk(samples: FloatArray?) {
+                        Log.d(TAG, "TTS Chunk: Size: ${samples?.size}")
                     }
 
                     override fun onComplete() {

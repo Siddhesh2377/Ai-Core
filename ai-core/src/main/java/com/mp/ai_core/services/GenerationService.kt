@@ -69,6 +69,10 @@ class GenerationService : Service() {
             return true
         }
 
+        override fun stopVLMGeneration() {
+            svcScope.launch { swapper.stopVLMGeneration() }
+        }
+
         override fun stopTextGeneration() = swapper.stopGeneration()
 
         override fun embed(text: String?): FloatArray? {

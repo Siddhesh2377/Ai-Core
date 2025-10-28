@@ -58,11 +58,14 @@ namespace chat {
     std::string build_tool_grammar(const std::string &tools_json) {
         auto names = extract_tool_names(tools_json);
         std::ostringstream g;
+
         g << R"(root         ::= json
-json         ::= ws toolcall ws
-toolcall     ::= "{" ws "\"tool_calls\"" ws ":" ws "[" ws call ws "]" ws "}"
-call         ::= "{" ws "\"name\"" ws ":" ws toolname ws "," ws "\"arguments\"" ws ":" ws object ws "}"
-)";
+                json         ::= ws toolcall ws
+                toolcall     ::= "{" ws "\"tool_calls\"" ws ":" ws "[" ws call ws "]" ws "}"
+                call         ::= "{" ws "\"name\"" ws ":" ws toolname ws "," ws "\"arguments\"" ws ":" ws object ws "}"
+                )";
+
+        // Tool names
         g << "toolname     ::= ";
         if (!names.empty()) {
             for (size_t i = 0; i < names.size(); ++i) {
@@ -73,15 +76,18 @@ call         ::= "{" ws "\"name\"" ws ":" ws toolname ws "," ws "\"arguments\"" 
             g << R"("\"unknown\"")";
         }
         g << "\n";
+
+        // Fixed grammar rules
         g << R"(
-object       ::= "{" ws "}"
-           | "{" ws member (ws "," ws member)* ws "}"
+object       ::= "{" ws "}" | "{" ws member (ws "," ws member)* ws "}"
 member       ::= string ws ":" ws value
-value        ::= string | number | object | "true" | "false" | "null"
-string       ::= "\"" [^"]* "\""
-number       ::= [0-9]+ ("." [0-9]+)?
+array        ::= "[" ws "]" | "[" ws value (ws "," ws value)* ws "]"
+value        ::= string | number | object | array | "true" | "false" | "null"
+string       ::= "\"" ([^"\\\n] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F]))* "\""
+number       ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [+-]? [0-9]+)?
 ws           ::= [ \t\n\r]*
 )";
+
         return g.str();
     }
 
@@ -110,8 +116,8 @@ ws           ::= [ \t\n\r]*
  *  Apply chat template (LLaMA’s built‑in style)
  * -------------------------------------------------------------------- */
     std::string apply_template(const ::llama_model *model, const std::string &system_prompt,
-                               const std::string &user_message,
-                               const std::string &custom_template, bool add_assistant) {
+                               const std::string &user_message, const std::string &custom_template,
+                               bool add_assistant) {
 
         /* Prefer the user‑supplied template, otherwise fall back to the model’s
            default chat template. */
