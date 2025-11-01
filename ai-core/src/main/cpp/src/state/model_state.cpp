@@ -46,13 +46,103 @@ std::string ModelState::detokenize_single(llama_token t) const {
     if (!vocab) return {};
 
     char buffer[512];
-    int n = llama_token_to_piece(vocab, t, buffer, sizeof(buffer) - 1, 0, true);
-    if (n < 0) {                               // buffer too small
+    int n = llama_token_to_piece(vocab, t, buffer, sizeof(buffer) - 1, 0, false);
+
+    if (n < 0) {
         std::string out((size_t)(-n), '\0');
-        llama_token_to_piece(vocab, t, out.data(), -n, 0, true);
+        n = llama_token_to_piece(vocab, t, out.data(), -n, 0, false);
+        if (n < 0) {
+            LOG_ERROR("Failed to detokenize token %d", t);
+            return {};
+        }
         return out;
     }
-    return std::string(buffer, buffer + n);
+
+    return std::string(buffer, (size_t)n);
+}
+
+std::string ModelState::detokenize_buffered(llama_token t) {
+    // Get raw token bytes
+    std::string piece = detokenize_single(t);
+    if (piece.empty()) return {};
+
+    // Add to carry buffer
+    utf8_carry_buffer += piece;
+
+    // Extract complete UTF-8 characters
+    std::string complete_chars;
+    size_t i = 0;
+
+    while (i < utf8_carry_buffer.size()) {
+        auto c = static_cast<unsigned char>(utf8_carry_buffer[i]);
+        size_t char_len = 0;
+
+        // Determine UTF-8 character length
+        if ((c & 0x80) == 0x00) {
+            char_len = 1; // ASCII (0xxxxxxx)
+        }
+        else if ((c & 0xE0) == 0xC0) {
+            char_len = 2; // 2-byte (110xxxxx)
+        }
+        else if ((c & 0xF0) == 0xE0) {
+            char_len = 3; // 3-byte (1110xxxx)
+        }
+        else if ((c & 0xF8) == 0xF0) {
+            char_len = 4; // 4-byte (11110xxx) - EMOJIS!
+        }
+        else {
+            // Invalid UTF-8 start byte - skip it
+            LOG_WARN("Invalid UTF-8 start byte: 0x%02X at position %zu", c, i);
+            i++;
+            continue;
+        }
+
+        // Check if we have enough bytes for complete character
+        if (i + char_len > utf8_carry_buffer.size()) {
+            // Incomplete character - keep in buffer
+            break;
+        }
+
+        // Validate continuation bytes
+        bool valid = true;
+        for (size_t j = 1; j < char_len; ++j) {
+            auto cont = static_cast<unsigned char>(utf8_carry_buffer[i + j]);
+            if ((cont & 0xC0) != 0x80) { // Must be 10xxxxxx
+                valid = false;
+                LOG_WARN("Invalid UTF-8 continuation byte: 0x%02X", cont);
+                break;
+            }
+        }
+
+        if (valid) {
+            // Complete valid UTF-8 character
+            complete_chars.append(utf8_carry_buffer.substr(i, char_len));
+            i += char_len;
+        } else {
+            // Invalid sequence - skip the start byte
+            i++;
+        }
+    }
+
+    // Remove processed characters from buffer
+    utf8_carry_buffer = utf8_carry_buffer.substr(i);
+
+    return complete_chars;
+}
+
+std::string ModelState::flush_utf8_buffer() {
+    std::string remaining = utf8_carry_buffer;
+    utf8_carry_buffer.clear();
+
+    // If there are incomplete bytes, log a warning
+    if (!remaining.empty()) {
+        LOG_WARN("Flushing incomplete UTF-8 sequence: %zu bytes", remaining.size());
+        for (unsigned char c : remaining) {
+            LOG_WARN("  Byte: 0x%02X", c);
+        }
+    }
+
+    return remaining;
 }
 
 llama_token ModelState::space_token() const {
@@ -71,6 +161,10 @@ void ModelState::release() {
     if (sampler) { llama_sampler_free(sampler); sampler = nullptr; }
     if (ctx) { llama_free(ctx); ctx = nullptr; }
     if (model) { llama_model_free(model); model = nullptr; }
+
+    // ✅ Clear UTF-8 buffer on release
+    utf8_carry_buffer.clear();
+
     llama_backend_free();
     LOG_INFO("ModelState: all resources released");
 }
@@ -84,6 +178,9 @@ void ModelState::prepare_for_generation() {
     if (mem) llama_memory_clear(mem, true);   // wipe KV cache
 
     if (sampler) llama_sampler_reset(sampler);
+
+    // ✅ Clear UTF-8 buffer when starting new generation
+    utf8_carry_buffer.clear();
 }
 
 // ------------------------------------------------------------------
@@ -120,7 +217,7 @@ void ModelState::rebuild_sampler(int top_k, float top_p, float temp, float min_p
 // ------------------------------------------------------------------
 // Prompt decoding
 // ------------------------------------------------------------------
-bool ModelState::decode_prompt(const std::vector<llama_token>& toks) {
+bool ModelState::decode_prompt(const std::vector<llama_token>& toks) const {
     if (!ctx || toks.empty()) return true;
 
     llama_batch batch = llama_batch_init(batch_size, 0, 1);
@@ -151,7 +248,7 @@ bool ModelState::decode_prompt(const std::vector<llama_token>& toks) {
 // ------------------------------------------------------------------
 // Warm‑up to prime the model
 // ------------------------------------------------------------------
-void ModelState::warmup_context() {
+void ModelState::warmup_context() const {
     llama_token space = space_token();
     if (space == 0) return;
 
@@ -170,15 +267,16 @@ void ModelState::warmup_context() {
 // ------------------------------------------------------------------
 // State persistence
 // ------------------------------------------------------------------
-jlong ModelState::get_state_size() const { return llama_state_get_size(ctx); }
+jlong ModelState::get_state_size() const {
+    return llama_state_get_size(ctx);
+}
 
 void* ModelState::get_state_data(void* buffer, size_t size) const {
     if (!ctx) return nullptr;
-    return reinterpret_cast<void *>(llama_state_get_data(ctx, static_cast<uint8_t *>(buffer),
-                                                         size));
+    return reinterpret_cast<void *>(llama_state_get_data(ctx, static_cast<uint8_t *>(buffer), size));
 }
 
-bool ModelState::load_state_data(const void* data, size_t size) {
+bool ModelState::load_state_data(const void* data, size_t size) const {
     if (!ctx) return false;
     size_t n = llama_state_set_data(ctx, static_cast<const uint8_t*>(data), size);
     return n == size;
