@@ -126,6 +126,7 @@ class AudioService : Service() {
 
             json.put("tts", JSONObject().apply {
                 put("ready", ttsEngine.isReady())
+                Log.d(TAG, "TTS ready: ${ttsEngine.isReady()}")
                 if (ttsEngine.isReady()) {
                     put("sample_rate", ttsEngine.getSampleRate())
                     put("speakers", ttsEngine.getNumSpeakers())

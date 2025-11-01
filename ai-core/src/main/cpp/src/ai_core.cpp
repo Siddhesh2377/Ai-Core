@@ -243,41 +243,47 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv* env, jobject,
 
     llama_batch single = llama_batch_init(1, 0, 1);
 
+// ✅ Clear UTF-8 buffer at start of generation
+    g_state.utf8_carry_buffer.clear();
+
     for (int i = 0; i < to_generate && !g_stop_requested.load(); ++i) {
 
-        // --- Sample & accept ------------------------------------------------
+        // Sample & accept
         llama_token tok = llama_sampler_sample(g_state.sampler, g_state.ctx, -1);
         llama_sampler_accept(g_state.sampler, tok);
 
-        // Turn EOS into a space if it is the very first token
+        // Turn EOS into space if first token
         if (i == 0 && (tok == eos || tok == eot)) {
-            tok = g_state.space_token();   // default: a single space
+            tok = g_state.space_token();
         }
         if (tok == eos || tok == eot) break;
 
-        // --- Decode token to string -----------------------------------------
-        std::string piece = g_state.detokenize_single(tok);
+        // ✅ Use buffered detokenization
+        std::string complete_chars = g_state.detokenize_buffered(tok);
 
-        // --- Tool‑call detection --------------------------------------------
-        bool complete = false;
-        if (g_state.tools_enabled) {
-            complete = tool_state.accumulate(piece);
-            if (complete) {
-                std::string name, payload;
-                if (tool_state.extract_tool_call(name, payload)) {
-                    jni::on_toolcall(env, jcallback, name, payload);
-                    break;                       // exit turn – caller will run the tool
+        // Only process if we got complete UTF-8 characters
+        if (!complete_chars.empty()) {
+            // Tool-call detection
+            bool complete = false;
+            if (g_state.tools_enabled) {
+                complete = tool_state.accumulate(complete_chars);
+                if (complete) {
+                    std::string name, payload;
+                    if (tool_state.extract_tool_call(name, payload)) {
+                        jni::on_toolcall(env, jcallback, name, payload);
+                        break;
+                    }
+                    tool_state.reset();
                 }
-                tool_state.reset();
+            }
+
+            // Emit complete UTF-8 characters
+            if (!tool_state.is_collecting()) {
+                jni::on_token(env, jcallback, complete_chars);
             }
         }
 
-        // --- Emit token (unless we are in the middle of a tool JSON) ----
-        if (!tool_state.is_collecting()) {
-            jni::on_token(env, jcallback, piece);
-        }
-
-        // --- Prepare batch for next token ------------------------------------
+        // Prepare batch for next token
         single.n_tokens = 1;
         single.token[0] = tok;
         single.pos[0] = static_cast<int32_t>(prompt_toks.size() + i);
@@ -297,7 +303,11 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv* env, jobject,
         }
     }
 
-    // Clean up loop objects
+    std::string remaining = g_state.flush_utf8_buffer();
+    if (!remaining.empty()) {
+        jni::on_token(env, jcallback, remaining);
+    }
+
     llama_batch_free(single);
     utf8::flush_carry(env, jcallback);
     jni::on_done(env, jcallback);
