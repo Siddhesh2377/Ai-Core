@@ -17,7 +17,11 @@ interface IGenerationService {
         float temp,
         int topK,
         float topP,
-        float minP
+        float minP,
+        int mirostat,
+        float mirostatTau,
+        float mirostatEta,
+        int seed
     );
     void unloadTextGenerationModel();
     boolean generateText(

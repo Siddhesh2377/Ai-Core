@@ -28,7 +28,7 @@ struct ModelState {
     bool is_ready() const { return model && ctx; }
     void release();
     void prepare_for_generation();
-    void rebuild_sampler(int top_k, float top_p, float temp, float min_p);
+
     void warmup_context() const;
 
     std::vector<llama_token> tokenize(const std::string& text) const;
@@ -44,6 +44,18 @@ struct ModelState {
     jlong get_state_size() const;
     void* get_state_data(void* buffer, size_t size) const;
     bool load_state_data(const void* data, size_t size) const;
+    void rebuild_sampler(
+            int topK,
+            float topP,
+            float temp,
+            float minP,
+            int mirostat,
+            float mirostatTau,
+            float mirostatEta,
+            int seed);
 };
 
+
+
 #endif // MODEL_STATE_H
+

@@ -10,7 +10,13 @@ import androidx.core.app.NotificationCompat
 import androidx.core.graphics.drawable.IconCompat
 import com.mp.ai_core.R
 import com.mp.ai_core.helpers.ModelSwapper
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 class GenerationService : Service() {
 
@@ -19,10 +25,24 @@ class GenerationService : Service() {
 
     private val binder = object : IGenerationService.Stub() {
 
-        override fun loadTextGenerationModel(path: String, threads: Int, gpuLayers: Int, useMMap: Boolean, ctxSize: Int, temp: Float, topK: Int, topP: Float, minP: Float): Boolean {
+        override fun loadTextGenerationModel(
+            path: String,
+            threads: Int,
+            gpuLayers: Int,
+            useMMap: Boolean,
+            ctxSize: Int,
+            temp: Float,
+            topK: Int,
+            topP: Float,
+            minP: Float,
+            mirostat: Int,
+            mirostatTau: Float,
+            mirostatEta: Float,
+            seed: Int
+        ): Boolean {
             val deferred = CompletableDeferred<Boolean>()
             svcScope.launch {
-                val result = swapper.loadGeneration(path, threads, ctxSize, temp, topK, topP, minP)
+                val result = swapper.loadGeneration(path, threads, ctxSize, temp, topK, topP, minP, mirostat, mirostatTau, mirostatEta, seed)
                 deferred.complete(result)
             }
             return runBlocking { deferred.await() }
@@ -59,13 +79,36 @@ class GenerationService : Service() {
             svcScope.launch { swapper.unloadEmbedding() }
         }
 
-        override fun generateText(prompt: String, maxTokens: Int, toolCallingJson: String, callback: IGenerationCallback): Boolean {
+        override fun generateText(
+            prompt: String,
+            maxTokens: Int,
+            toolCallingJson: String,
+            callback: IGenerationCallback
+        ): Boolean {
             svcScope.launch { swapper.generateText(prompt, maxTokens, toolCallingJson, callback) }
             return true
         }
 
-        override fun generateWithImage(prompt: String, imageData: ByteArray, imageWidth: Int, imageHeight: Int, maxTokens: Int, toolCallingJson: String, callback: IGenerationCallback): Boolean {
-            svcScope.launch { swapper.generateWithImage(prompt, imageData, imageWidth, imageHeight, maxTokens, toolCallingJson, callback) }
+        override fun generateWithImage(
+            prompt: String,
+            imageData: ByteArray,
+            imageWidth: Int,
+            imageHeight: Int,
+            maxTokens: Int,
+            toolCallingJson: String,
+            callback: IGenerationCallback
+        ): Boolean {
+            svcScope.launch {
+                swapper.generateWithImage(
+                    prompt,
+                    imageData,
+                    imageWidth,
+                    imageHeight,
+                    maxTokens,
+                    toolCallingJson,
+                    callback
+                )
+            }
             return true
         }
 
@@ -132,6 +175,7 @@ class GenerationService : Service() {
         super.onCreate()
         startForeground(1, buildNotification())
     }
+
     override fun onDestroy() {
         super.onDestroy()
         swapper.stopGeneration()
@@ -143,12 +187,9 @@ class GenerationService : Service() {
         val mgr = getSystemService(NotificationManager::class.java)
         val ch = NotificationChannel(chId, "AI Core Service", NotificationManager.IMPORTANCE_LOW)
         mgr.createNotificationChannel(ch)
-        return NotificationCompat.Builder(this, chId)
-            .setContentTitle("AI Core Service")
+        return NotificationCompat.Builder(this, chId).setContentTitle("AI Core Service")
             .setContentText("LLM Engine ready…")
             .setSmallIcon(IconCompat.createWithResource(this, R.drawable.privicy))
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setOngoing(true)
-            .build()
+            .setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).build()
     }
 }

@@ -66,7 +66,11 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
                                           jfloat temp,
                                           jint topK,
                                           jfloat topP,
-                                          jfloat minP) {
+                                          jfloat minP,
+                                          jint mirostat,
+                                          jfloat mirostatTau,
+                                          jfloat mirostatEta,
+                                          jint seed) {
     std::lock_guard<std::mutex> lk(g_init_mtx);
 
     const std::string path = utf8::from_jstring(env, jpath);
@@ -78,7 +82,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
     LOG_INFO("Initializing model '%s' (threads=%d, ctx=%d)", path.c_str(), nthreads, ctxSize);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;                // CPU only
+    mparams.n_gpu_layers = 0;                // CPU only by default
     mparams.use_mmap = true;
     mparams.use_mlock = false;
     mparams.check_tensors = true;
@@ -90,6 +94,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
         return JNI_FALSE;
     }
 
+    // Context params (same as before)
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize;
     cparams.n_batch = 512;
@@ -107,9 +112,20 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
         return JNI_FALSE;
     }
 
+    // persist config into g_state so setters and other flows can read them
     g_state.ctx_size = ctxSize;
     g_state.batch_size = cparams.n_batch;
-    g_state.rebuild_sampler(static_cast<int>(topK), topP, temp, minP);
+
+
+    g_state.rebuild_sampler(static_cast<int>(topK),
+                            topP,
+                            temp,
+                            minP,
+                            mirostat,
+                            mirostatTau,
+                            mirostatEta,
+                            seed);
+
     g_state.warmup_context();
 
     // Optional tools – configure grammar chain
@@ -118,6 +134,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
     LOG_INFO("Model initialized successfully");
     return JNI_TRUE;
 }
+
 
 /*  --------------------------------------------------------------
  *      JNI: release resources

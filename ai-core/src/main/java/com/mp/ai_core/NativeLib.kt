@@ -76,7 +76,11 @@ class NativeLib private constructor(private val instanceId: String) {
                             temp: Float,
                             topK: Int,
                             topP: Float,
-                            minP: Float): Boolean
+                            minP: Float,
+                            mirostat: Int,
+                            mirostatTau: Float,
+                            mirostatEta: Float,
+                            seed: Int): Boolean
 
     // -------------------------------------------------------------
     //  State flags – keep them local (no static global weak refs)
@@ -98,10 +102,15 @@ class NativeLib private constructor(private val instanceId: String) {
              temp: Float = 0.7f,
              topK: Int = 20,
              topP: Float = 0.9f,
-             minP: Float = 0.0f): Boolean {
+             minP: Float = 0.0f,
+             mirostat: Int,
+             mirostatTau: Float ,
+             mirostatEta: Float ,
+             seed: Int,
+    ): Boolean {
         nativeRelease()   // graceful cleanup of any pre‑existing ctx
         return try {
-            val ok = nativeInit(path, threads, ctxSize, temp, topK, topP, minP)
+            val ok = nativeInit(path, threads, ctxSize, temp, topK, topP, minP, mirostat, mirostatTau, mirostatEta, seed)
             if (ok) {
                 isModelInitialized = true
                 Log.i("$instanceId.nn", "Model initialised: $path")
