@@ -29,7 +29,7 @@ class NativeLib private constructor(private val instanceId: String) {
     // -----------------------------------------------------------------
     companion object {
         private val instances = mutableMapOf<String, NativeLib>()
-
+        private var coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         init { System.loadLibrary("ai_core") }   // one-time NDK load
 
         /**
@@ -76,7 +76,11 @@ class NativeLib private constructor(private val instanceId: String) {
                             temp: Float,
                             topK: Int,
                             topP: Float,
-                            minP: Float): Boolean
+                            minP: Float,
+                            mirostat: Int,
+                            mirostatTau: Float,
+                            mirostatEta: Float,
+                            seed: Int): Boolean
 
     // -------------------------------------------------------------
     //  State flags – keep them local (no static global weak refs)
@@ -98,10 +102,15 @@ class NativeLib private constructor(private val instanceId: String) {
              temp: Float = 0.7f,
              topK: Int = 20,
              topP: Float = 0.9f,
-             minP: Float = 0.0f): Boolean {
+             minP: Float = 0.0f,
+             mirostat: Int,
+             mirostatTau: Float ,
+             mirostatEta: Float ,
+             seed: Int,
+    ): Boolean {
         nativeRelease()   // graceful cleanup of any pre‑existing ctx
         return try {
-            val ok = nativeInit(path, threads, ctxSize, temp, topK, topP, minP)
+            val ok = nativeInit(path, threads, ctxSize, temp, topK, topP, minP, mirostat, mirostatTau, mirostatEta, seed)
             if (ok) {
                 isModelInitialized = true
                 Log.i("$instanceId.nn", "Model initialised: $path")
@@ -131,13 +140,18 @@ class NativeLib private constructor(private val instanceId: String) {
             return
         }
 
+        if (!coroutineScope.isActive) {
+            Log.w(TAG, "Scope inactive, recreating...")
+            coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+        }
+
         // Set/clear tool JSON for this turn
         nativeSetToolsJson(toolsJson.ifEmpty { "" })
 
         // Channel that passes raw tokens from the JNI layer to the UI
         val ch = Channel<String>(capacity = 256)
         val batchMs = 35L
-        val coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
 
         coroutineScope.launch {
             // ---- Batching that runs on a background thread ----
@@ -192,9 +206,9 @@ class NativeLib private constructor(private val instanceId: String) {
             override fun onDone() { ch.close() }
             override fun onError(message: String) { ch.close(); callback.onError(message) }
         }
-
+        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         // Run the JNI call on IO – it is blocking until model finishes
-        val parent = coroutineScope.launch(Dispatchers.IO) {
+        val parent = scope.launch(Dispatchers.IO) {
             val ok = nativeGenerateStream(prompt, maxTokens, cb)
             if (!ok) callback.onError("nativeGenerateStream returned false")
         }

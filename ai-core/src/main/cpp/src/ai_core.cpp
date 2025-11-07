@@ -66,7 +66,11 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
                                           jfloat temp,
                                           jint topK,
                                           jfloat topP,
-                                          jfloat minP) {
+                                          jfloat minP,
+                                          jint mirostat,
+                                          jfloat mirostatTau,
+                                          jfloat mirostatEta,
+                                          jint seed) {
     std::lock_guard<std::mutex> lk(g_init_mtx);
 
     const std::string path = utf8::from_jstring(env, jpath);
@@ -78,7 +82,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
     LOG_INFO("Initializing model '%s' (threads=%d, ctx=%d)", path.c_str(), nthreads, ctxSize);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0;                // CPU only
+    mparams.n_gpu_layers = 0;                // CPU only by default
     mparams.use_mmap = true;
     mparams.use_mlock = false;
     mparams.check_tensors = true;
@@ -90,6 +94,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
         return JNI_FALSE;
     }
 
+    // Context params (same as before)
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize;
     cparams.n_batch = 512;
@@ -107,9 +112,20 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
         return JNI_FALSE;
     }
 
+    // persist config into g_state so setters and other flows can read them
     g_state.ctx_size = ctxSize;
     g_state.batch_size = cparams.n_batch;
-    g_state.rebuild_sampler(static_cast<int>(topK), topP, temp, minP);
+
+
+    g_state.rebuild_sampler(static_cast<int>(topK),
+                            topP,
+                            temp,
+                            minP,
+                            mirostat,
+                            mirostatTau,
+                            mirostatEta,
+                            seed);
+
     g_state.warmup_context();
 
     // Optional tools – configure grammar chain
@@ -118,6 +134,7 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
     LOG_INFO("Model initialized successfully");
     return JNI_TRUE;
 }
+
 
 /*  --------------------------------------------------------------
  *      JNI: release resources
@@ -326,13 +343,87 @@ Java_com_mp_ai_1core_NativeLib_llamaPrintTimings(JNIEnv*, jobject) {
 /*  --------------------------------------------------------------
  *      JNI: model information
  *  -------------------------------------------------------------- */
+
+static const char* detect_model_architecture(llama_model* model) {
+    if (!model) return "unknown";
+
+    // Try to get architecture from metadata
+    char arch_buf[128] = {0};
+    int32_t arch_len = llama_model_meta_val_str(model, "general.architecture", arch_buf, sizeof(arch_buf));
+
+    if (arch_len > 0) {
+        std::string arch(arch_buf);
+        std::transform(arch.begin(), arch.end(), arch.begin(), ::tolower);
+
+        if (arch.find("llama") != std::string::npos) return "llama";
+        if (arch.find("qwen") != std::string::npos) return "qwen";
+        if (arch.find("gemma") != std::string::npos) return "gemma";
+        if (arch.find("phi") != std::string::npos) return "phi";
+        if (arch.find("mistral") != std::string::npos) return "mistral";
+        if (arch.find("mixtral") != std::string::npos) return "mixtral";
+        if (arch.find("yi") != std::string::npos) return "yi";
+        if (arch.find("deepseek") != std::string::npos) return "deepseek";
+        if (arch.find("command") != std::string::npos) return "command-r";
+        if (arch.find("starcoder") != std::string::npos) return "starcoder";
+
+        return arch_buf;
+    }
+
+    // Fallback: try model name
+    char name_buf[256] = {0};
+    int32_t name_len = llama_model_meta_val_str(model, "general.name", name_buf, sizeof(name_buf));
+
+    if (name_len > 0) {
+        std::string name(name_buf);
+        std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+
+        if (name.find("qwen") != std::string::npos) return "qwen";
+        if (name.find("gemma") != std::string::npos) return "gemma";
+        if (name.find("phi") != std::string::npos) return "phi";
+        if (name.find("mistral") != std::string::npos) return "mistral";
+        if (name.find("llama") != std::string::npos) return "llama";
+        if (name.find("yi-") != std::string::npos) return "yi";
+        if (name.find("deepseek") != std::string::npos) return "deepseek";
+    }
+
+    return "unknown";
+}
+
+static const char* get_model_name(llama_model* model) {
+    if (!model) return "";
+
+    static char name_buf[256] = {0};
+    llama_model_meta_val_str(model, "general.name", name_buf, sizeof(name_buf));
+    return name_buf;
+}
+
+static const char* get_model_description(llama_model* model) {
+    if (!model) return "";
+
+    static char desc_buf[512] = {0};
+    llama_model_meta_val_str(model, "general.description", desc_buf, sizeof(desc_buf));
+    return desc_buf;
+}
+
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv* env, jobject) {
     if (!g_state.model) return env->NewStringUTF("{}");
 
     const llama_vocab* vocab = llama_model_get_vocab(g_state.model);
     std::ostringstream json;
+
     json << "{";
+
+    // Model identity
+    const char* arch = detect_model_architecture(g_state.model);
+    const char* name = get_model_name(g_state.model);
+    const char* desc = get_model_description(g_state.model);
+
+    json << R"("architecture":")" << chat::json_escape(arch) << "\",";
+    json << R"("name":")" << chat::json_escape(name) << "\",";
+    json << R"("description":")" << chat::json_escape(desc) << "\",";
+
+    // Model dimensions
     json << "\"n_vocab\":" << (vocab ? llama_vocab_n_tokens(vocab) : 0) << ",";
     json << "\"n_ctx_train\":" << llama_model_n_ctx_train(g_state.model) << ",";
     json << "\"n_embd\":" << llama_model_n_embd(g_state.model) << ",";
@@ -340,19 +431,85 @@ Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv* env, jobject) {
     json << "\"n_head\":" << llama_model_n_head(g_state.model) << ",";
     json << "\"n_head_kv\":" << llama_model_n_head_kv(g_state.model) << ",";
 
+    // Vocabulary tokens
     if (vocab) {
         json << "\"bos\":" << llama_vocab_bos(vocab) << ",";
         json << "\"eos\":" << llama_vocab_eos(vocab) << ",";
         json << "\"eot\":" << llama_vocab_eot(vocab) << ",";
         json << "\"nl\":" << llama_vocab_nl(vocab) << ",";
+
+        // Vocab type
+        const char* vocab_type = "unknown";
+        switch (llama_vocab_type(vocab)) {
+            case LLAMA_VOCAB_TYPE_SPM: vocab_type = "spm"; break;
+            case LLAMA_VOCAB_TYPE_BPE: vocab_type = "bpe"; break;
+            case LLAMA_VOCAB_TYPE_WPM: vocab_type = "wpm"; break;
+        }
+        json << R"("vocab_type":")" << vocab_type << "\",";
     }
 
-    const char* tmpl = llama_model_chat_template(g_state.model, nullptr);
-    if (tmpl && *tmpl)
-        json << R"("chat_template":")" << chat::json_escape(tmpl) << "\",";
-    else
-        json << "\"chat_template\":null,";
+    // Chat template
+// Get architecture first
+    char arch_buf[128] = {0};
+    llama_model_meta_val_str(g_state.model, "general.architecture", arch_buf, sizeof(arch_buf));
+    std::string architecture(arch_buf);
 
+// Try to get template from model
+    const char* tmpl = llama_model_chat_template(g_state.model, nullptr);
+    std::string template_str;
+    const char* template_type = "custom";
+
+    if (tmpl && *tmpl) {
+        // Model has embedded template
+        template_str = std::string(tmpl);
+    } else {
+        // No template - generate default based on architecture
+        std::transform(architecture.begin(), architecture.end(), architecture.begin(), ::tolower);
+
+        if (architecture.find("llama") != std::string::npos) {
+            template_str = "{% for message in messages %}{% if message['role'] == 'system' %}{{ message['content'] }}{% endif %}{% if message['role'] == 'user' %}[INST] {{ message['content'] }} [/INST]{% endif %}{% if message['role'] == 'assistant' %}{{ message['content'] }}{% endif %}{% endfor %}";
+            template_type = "llama";
+        }
+        else if (architecture.find("qwen") != std::string::npos) {
+            template_str = "<|im_start|>system\n{{ system }}<|im_end|>\n<|im_start|>user\n{{ user }}<|im_end|>\n<|im_start|>assistant\n";
+            template_type = "chatml";
+        }
+        else if (architecture.find("gemma") != std::string::npos) {
+            template_str = "<start_of_turn>system\n{{ system }}<end_of_turn>\n<start_of_turn>user\n{{ user }}<end_of_turn>\n<start_of_turn>model\n";
+            template_type = "gemma";
+        }
+        else if (architecture.find("phi") != std::string::npos) {
+            template_str = "<|system|>\n{{ system }}<|end|>\n<|user|>\n{{ user }}<|end|>\n<|assistant|>\n";
+            template_type = "phi";
+        }
+        else if (architecture.find("mistral") != std::string::npos || architecture.find("mixtral") != std::string::npos) {
+            template_str = "[INST] {{ system }}\n{{ user }} [/INST]";
+            template_type = "llama";
+        }
+        else {
+            // Generic ChatML fallback
+            template_str = "<|im_start|>system\n{{ system }}<|im_end|>\n<|im_start|>user\n{{ user }}<|im_end|>\n<|im_start|>assistant\n";
+            template_type = "chatml";
+        }
+    }
+
+// Detect type if we got template from model
+    if (tmpl && *tmpl) {
+        if (template_str.find("<|im_start|>") != std::string::npos)
+            template_type = "chatml";
+        else if (template_str.find("<start_of_turn>") != std::string::npos)
+            template_type = "gemma";
+        else if (template_str.find("[INST]") != std::string::npos)
+            template_type = "llama";
+        else if (template_str.find("<|system|>") != std::string::npos)
+            template_type = "phi";
+    }
+
+// Always return a template
+    json << R"("chat_template":")" << chat::json_escape(template_str) << "\",";
+    json << R"("template_type":")" << template_type << "\",";
+
+    // System info
     json << R"("system":")" << chat::json_escape(llama_print_system_info()) << "\"";
     json << "}";
 
