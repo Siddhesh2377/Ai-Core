@@ -120,13 +120,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun initializeModels(service: IGenerationService) {
-        val vlmPath = "/storage/emulated/0/Download/VLM/LFM2-VL-450M-Q4_0.gguf"
-        val projPath = "/storage/emulated/0/Download/VLM/mmproj-LFM2-VL-450M-Q8_0.gguf"
+        val vlmPath = "/storage/emulated/0/Download/VLM/SmolVLM-500M-Instruct-Q8_0.gguf"
+        val projPath = "/storage/emulated/0/Download/VLM/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"
         val threads = min(Runtime.getRuntime().availableProcessors(), 8)
 
         lifecycleScope.launch(Dispatchers.IO) {
             val vlmOk = service.loadTextGenerationModel(
-                vlmPath, threads, 0, true, 2048, 0.8f, 40, 0.95f, 0.1f
+                vlmPath, threads, 0, true, 2048, 0.8f, 40, 0.95f, 0.1f, 1, 5.0f, 0.10f, -1
             )
             if (vlmOk) {
                 val projOk = service.loadMultimodalProjector(projPath, threads)
@@ -217,8 +217,11 @@ fun VLMTab(service: IGenerationService) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    var modelPath by remember { mutableStateOf("/storage/emulated/0/Download/VLM/LFM2-VL-450M-Q4_0.gguf") }
-    var projPath by remember { mutableStateOf("/storage/emulated/0/Download/VLM/mmproj-LFM2-VL-450M-Q8_0.gguf") }
+  //  var modelPath by remember { mutableStateOf("/storage/emulated/0/Download/VLM/LFM2-VL-450M-Q4_0.gguf") }
+   // var projPath by remember { mutableStateOf("/storage/emulated/0/Download/VLM/mmproj-LFM2-VL-450M-Q8_0.gguf") }
+
+    var modelPath = "/storage/emulated/0/Download/Models/VLM/SmolVLM-500M-Instruct-Q8_0.gguf"
+    var projPath = "/storage/emulated/0/Download/Models/VLM/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf"
     var isModelLoaded by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
 
@@ -226,8 +229,7 @@ fun VLMTab(service: IGenerationService) {
     var output by remember { mutableStateOf("") }
     var isGenerating by remember { mutableStateOf(false) }
 
-    val imagePath =
-        "/data/data/com.mp.ai_core/files/fall-clipart-wallpaper-3840x2160-festive-decor-harvest-clipart-28488.jpg"
+    val imagePath = "/storage/emulated/0/Download/88677c650e927676e95344d05f813d69.jpg"
 
     Column(
         modifier = Modifier
@@ -277,7 +279,7 @@ fun VLMTab(service: IGenerationService) {
                             scope.launch(Dispatchers.IO) {
                                 val threads = min(Runtime.getRuntime().availableProcessors(), 8)
                                 val ok = service.loadTextGenerationModel(
-                                    modelPath, threads, 0, true, 2048, 0.8f, 40, 0.95f, 0.1f
+                                    modelPath, threads, 0, true, 2048, 0.8f, 40, 0.95f, 0.1f, 1, 5.0f, 0.10f, -1
                                 )
                                 if (ok) {
                                     val projOk = service.loadMultimodalProjector(projPath, threads)
@@ -394,7 +396,10 @@ fun VLMTab(service: IGenerationService) {
 
             Button(
                 onClick = {
-                    scope.launch(Dispatchers.IO) { service.stopTextGeneration() }
+                    scope.launch(Dispatchers.IO) {
+                        service.stopVLMGeneration()
+                        service.stopTextGeneration()
+                    }
                     isGenerating = false
                 },
                 enabled = isGenerating,
@@ -473,7 +478,7 @@ fun TextTab(service: IGenerationService) {
                                 service.unloadMultimodalProjector()
                                 val threads = min(Runtime.getRuntime().availableProcessors(), 8)
                                 val ok = service.loadTextGenerationModel(
-                                    modelPath, threads, 0, true, 4096, 0.7f, 40, 0.95f, 0.05f
+                                    modelPath, threads, 0, true, 4096, 0.7f, 40, 0.95f, 0.05f, 1, 5.0f, 0.10f, -1
                                 )
                                 scope.launch(Dispatchers.Main) {
                                     if (ok) {
