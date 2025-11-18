@@ -156,10 +156,7 @@ class ModelSwapper(private val scope: CoroutineScope) {
         toolsJson: String,
         callback: IGenerationCallback
     ): Boolean {
-        Log.d(
-            TAG,
-            "generateText: prompt=$prompt, maxTokens=$maxTokens, currentGenPath=$currentGenPath, isGenerating=${_isGenerating.get()}"
-        )
+        Log.d(TAG, "generateText: prompt length=${prompt.length}, maxTokens=$maxTokens")
 
         if (currentGenPath == null) {
             Log.e(TAG, "Cannot generate: no model loaded")
@@ -178,11 +175,23 @@ class ModelSwapper(private val scope: CoroutineScope) {
             try {
                 Log.i(TAG, "Starting text generation")
                 _isGenerating.set(true)
-                genLib.generateStreaming(prompt, maxTokens, callback, toolsJson)
+
+                // ✅ Wrap in try-catch to handle channel exceptions
+                try {
+                    genLib.generateStreaming(prompt, maxTokens, callback, toolsJson)
+                } catch (e: kotlinx.coroutines.channels.ClosedSendChannelException) {
+                    Log.w(TAG, "Channel closed during generation - likely cancelled", e)
+                    withContext(Dispatchers.Main) {
+                        callback.onError("Generation was cancelled")
+                    }
+                }
+
                 Log.i(TAG, "Text generation completed")
             } catch (e: Exception) {
                 Log.e(TAG, "Generation error", e)
-                withContext(Dispatchers.Main) { callback.onError("Native error: ${e.localizedMessage}") }
+                withContext(Dispatchers.Main) {
+                    callback.onError("Native error: ${e.localizedMessage}")
+                }
             } finally {
                 Log.d(TAG, "Cleaning up generation state")
                 _isGenerating.set(false)

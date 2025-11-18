@@ -12,7 +12,7 @@
 [versions]
 
 # ▶ Toolchain / Plugins
-agp = "8.13.0"                       # Android Gradle Plugin
+agp = "8.13.1"                       # Android Gradle Plugin
 kotlin = "2.2.10"                    # Kotlin language version
 ksp = "2.2.0-2.0.2"                  # Kotlin Symbol Processing plugin
 
@@ -87,12 +87,6 @@ moshi-kotlin = { module = "com.squareup.moshi:moshi-kotlin", version.ref = "mosh
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerializationJson" }
 
-# ▶ Accompanist / Navigation / Animation
-accompanist-insets = { module = "com.google.accompanist:accompanist-insets", version.ref = "accompanistInsets" }
-accompanist-insets-ui = { module = "com.google.accompanist:accompanist-insets-ui", version.ref = "accompanistInsetsUi" }
-accompanist-navigation-animation = { module = "com.google.accompanist:accompanist-navigation-animation", version.ref = "accompanistInsetsUi" }
-androidx-animation = { module = "androidx.compose.animation:animation", version.ref = "animation" }
-androidx-navigation-compose = { module = "androidx.navigation:navigation-compose", version.ref = "navigationCompose" }
 
 # ▶ AndroidX Core / AppCompat / Biometrics
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }

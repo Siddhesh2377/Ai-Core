@@ -5,6 +5,7 @@ import androidx.annotation.Keep
 import com.mp.ai_core.services.IGenerationCallback
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.onFailure
 
 // Keep the tag consistent with the previous code
 private const val TAG = "MicroAI"
@@ -128,13 +129,13 @@ class NativeLib private constructor(private val instanceId: String) {
     // -------------------------------------------------------------
     //  High‑level generation – backed by coroutines & a Channel
     // -------------------------------------------------------------
+    @OptIn(DelicateCoroutinesApi::class)
     suspend fun generateStreaming(
         prompt: String,
         maxTokens: Int = 512,
         callback: IGenerationCallback,
         toolsJson: String = ""
     ) {
-        // Quick guard – can be omitted if you trust callers
         if (!isReady()) {
             callback.onError("Model not initialised – call init() first")
             return
@@ -145,20 +146,17 @@ class NativeLib private constructor(private val instanceId: String) {
             coroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
         }
 
-        // Set/clear tool JSON for this turn
         nativeSetToolsJson(toolsJson.ifEmpty { "" })
 
-        // Channel that passes raw tokens from the JNI layer to the UI
         val ch = Channel<String>(capacity = 256)
         val batchMs = 35L
 
-
-        coroutineScope.launch {
-            // ---- Batching that runs on a background thread ----
+        // Consumer job
+        val consumerJob = coroutineScope.launch {
             val sb = StringBuilder()
             var lastFlush = System.nanoTime()
 
-            suspend fun flush (force: Boolean) {
+            suspend fun flush(force: Boolean) {
                 if (sb.isNotEmpty() &&
                     (force || (System.nanoTime() - lastFlush) / 1_000_000L >= batchMs)
                 ) {
@@ -166,7 +164,6 @@ class NativeLib private constructor(private val instanceId: String) {
                     sb.setLength(0)
                     lastFlush = System.nanoTime()
                     withContext(Dispatchers.Main.immediate) {
-                        // Clean token – commonly `[PAD]` and `[unusedX]` are useless
                         val clean = chunk.replace("[PAD]", "")
                             .replace(Regex("\\[unused\\d+]"), "")
                         if (clean.isNotBlank()) callback.onToken(clean)
@@ -174,48 +171,73 @@ class NativeLib private constructor(private val instanceId: String) {
                 }
             }
 
-            // Consume the channel
             try {
                 for (token in ch) {
                     sb.append(token)
                     flush(false)
                 }
-                flush(true)   // one last flush
+                flush(true)
             } catch (e: Throwable) {
                 Log.e(TAG, "Channel error", e)
                 callback.onError(e.localizedMessage ?: "Channel error")
             }
         }
 
-        // -----------------------------------------------
-        //  JNI side – feed tokens to the channel
-        // -----------------------------------------------
         val cb = object : StreamCallback {
             override fun onToken(token: String) {
-                // `trySend` is non‑blocking; if buffer is full we silently drop
-                // this token.  The normal flow down the channel gives us backpressure
-                // if we run out of callers.
-                ch.trySend(token).isSuccess
+                try {
+                    // Check if still active
+                    if (ch.isClosedForSend) {
+                        Log.w(TAG, "Channel closed, stopping native generation")
+                        nativeStopGeneration()
+                        return
+                    }
+
+                    val result = ch.trySend(token)
+                    if (result.isFailure) {
+                        Log.w(TAG, "Failed to send token, error: ${result.exceptionOrNull()}")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in onToken", e)
+                }
             }
 
             override fun onToolCall(name: String, argsJson: String) {
-                // Jump to UI thread – caller may use dispatchers.AFTER_EVENT
-                CoroutineScope(Dispatchers.Main.immediate).launch { callback.onToolCall(name, argsJson) }
+                CoroutineScope(Dispatchers.Main.immediate).launch {
+                    callback.onToolCall(name, argsJson)
+                }
             }
 
-            override fun onDone() { ch.close() }
-            override fun onError(message: String) { ch.close(); callback.onError(message) }
-        }
-        val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-        // Run the JNI call on IO – it is blocking until model finishes
-        val parent = scope.launch(Dispatchers.IO) {
-            val ok = nativeGenerateStream(prompt, maxTokens, cb)
-            if (!ok) callback.onError("nativeGenerateStream returned false")
+            override fun onDone() {
+                ch.close()
+            }
+
+            override fun onError(message: String) {
+                ch.close()
+                callback.onError(message)
+            }
         }
 
-        // Wait for the flow to finish – we cancel the batcher afterwards
-        parent.join()
-        coroutineScope.cancel()
+        // ✅ Use a separate scope that won't be cancelled
+        val generationScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+        try {
+            val generationJob = generationScope.launch {
+                val ok = nativeGenerateStream(prompt, maxTokens, cb)
+                if (!ok) {
+                    callback.onError("nativeGenerateStream returned false")
+                }
+            }
+
+            // ✅ Wait for BOTH jobs to complete
+            generationJob.join()
+            consumerJob.join()
+
+        } finally {
+            ch.close()
+            generationScope.cancel()
+        }
+
         callback.onDone()
     }
 
