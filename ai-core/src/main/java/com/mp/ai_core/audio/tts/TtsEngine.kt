@@ -29,10 +29,7 @@ class TtsEngine(private val scope: CoroutineScope) {
         dataDir: String,
     ): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
-            Log.d(TAG, "Initializing TTS: modelDir=$modelDir, modelName=$modelName")
-
             if (tts != null) {
-                Log.w(TAG, "TTS already initialized, releasing old instance")
                 releaseUnsafe()
             }
 
@@ -76,7 +73,6 @@ class TtsEngine(private val scope: CoroutineScope) {
                 }
 
                 try {
-                    Log.d(TAG, "Starting TTS generation: text=$text, speakerId=$speakerId")
                     isStopped.set(false)
                     ttsInstance.currentSid = speakerId
 
@@ -99,15 +95,12 @@ class TtsEngine(private val scope: CoroutineScope) {
                             text = text,
                             callback = ::callback
                         )
-                        Log.i(TAG, "Audio generation completed")
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error during audio generation", e)
                         withContext(Dispatchers.Main) { audioCallback.onError(e.message ?: "Unknown error") }
                     }
 
                     if (!isStopped.get()) {
                         withContext(Dispatchers.Main) { audioCallback.onComplete() }
-                        Log.i(TAG, "TTS generation completed")
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "TTS generation error", e)

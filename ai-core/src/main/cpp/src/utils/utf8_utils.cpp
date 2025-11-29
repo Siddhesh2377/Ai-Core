@@ -9,9 +9,6 @@ namespace utf8 {
  * -------------------------------------------------------------------- */
     static thread_local std::string t_carry;
 
-    inline std::string& get_carry_buffer() { return t_carry; }
-    inline void clear_carry_buffer() { t_carry.clear(); }
-
 /* --------------------------------------------------------------------
  *  Helper: Check if char16_t is a high surrogate
  * -------------------------------------------------------------------- */

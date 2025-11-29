@@ -22,11 +22,6 @@ void ModelState::rebuild_sampler(
         float mirostatTau,
         float mirostatEta,
         int seed) {
-
-    LOG_INFO("=== rebuild_sampler START ===");
-    LOG_INFO("Parameters: topK=%d, topP=%.2f, temp=%.2f, minP=%.2f", topK, topP, temp, minP);
-    LOG_INFO("Mirostat: mode=%d, tau=%.2f, eta=%.2f, seed=%d", mirostat, mirostatTau, mirostatEta, seed);
-
     // Free existing sampler
     if (sampler) {
         LOG_INFO("Freeing existing sampler chain");
@@ -39,9 +34,7 @@ void ModelState::rebuild_sampler(
         LOG_ERROR("❌ Failed to get vocab for sampler rebuild");
         return;
     }
-    LOG_INFO("✓ Vocab retrieved for sampler");
 
-    // Initialize default chain parameters
     auto sparams = llama_sampler_chain_default_params();
     LOG_INFO("Creating sampler chain...");
     llama_sampler *chain = llama_sampler_chain_init(sparams);
@@ -49,7 +42,6 @@ void ModelState::rebuild_sampler(
         LOG_ERROR("❌ Failed to create sampler chain");
         return;
     }
-    LOG_INFO("✓ Sampler chain created");
 
     // Add grammar sampler first (if any tools exist)
     if (tools_enabled && grammar_sampler) {
@@ -83,44 +75,25 @@ void ModelState::rebuild_sampler(
     }
         // --- Standard sampling branch ---
     else {
-        LOG_INFO("Using standard sampling");
-
-        LOG_INFO("Adding top-k sampler (k=%d)", topK);
         llama_sampler_chain_add(chain, llama_sampler_init_top_k(topK));
 
         if (topP < 1.0f) {
-            LOG_INFO("Adding top-p sampler (p=%.2f)", topP);
             llama_sampler_chain_add(chain, llama_sampler_init_top_p(topP, 1));
-        } else {
-            LOG_INFO("Skipping top-p (p=%.2f >= 1.0)", topP);
         }
-
         if (std::abs(temp - 1.0f) > 1e-3f) {
-            LOG_INFO("Adding temperature sampler (temp=%.2f)", temp);
             llama_sampler_chain_add(chain, llama_sampler_init_temp(temp));
-        } else {
-            LOG_INFO("Skipping temperature (temp=%.2f ~= 1.0)", temp);
         }
 
         if (temp > 0.0f) {
-            LOG_INFO("Adding distribution sampler");
             llama_sampler_chain_add(chain, llama_sampler_init_dist(-1));
         }
 
         if (minP > 0.0f) {
-            LOG_INFO("Adding min-p sampler (minP=%.2f)", minP);
             llama_sampler_chain_add(chain, llama_sampler_init_min_p(minP, 1));
-        } else {
-            LOG_INFO("Skipping min-p (minP=%.2f <= 0.0)", minP);
         }
     }
-
     sampler = chain;
-    LOG_INFO("Resetting sampler state...");
     llama_sampler_reset(sampler);
-
-    LOG_INFO("✓ Sampler rebuilt successfully");
-    LOG_INFO("=== rebuild_sampler END ===");
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -128,9 +101,6 @@ void ModelState::rebuild_sampler(
 //////////////////////////////////////////////////////////////////////
 
 std::vector<llama_token> ModelState::tokenize(const std::string &text) const {
-    LOG_INFO("=== tokenize START ===");
-    LOG_INFO("Input text length: %zu bytes", text.size());
-
     if (!model) {
         LOG_ERROR("❌ Model is null");
         return {};
@@ -141,18 +111,13 @@ std::vector<llama_token> ModelState::tokenize(const std::string &text) const {
         LOG_ERROR("❌ Vocab is null");
         return {};
     }
-    LOG_INFO("✓ Model and vocab ready");
 
     int32_t guess = static_cast<int32_t>(text.size() + 8);
-    LOG_INFO("Initial token buffer size: %d", guess);
     std::vector<llama_token> toks(static_cast<size_t>(guess));
-
-    LOG_INFO("Calling llama_tokenize (first attempt)...");
     int32_t n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
                                toks.data(), static_cast<int32_t>(toks.size()), true, true);
 
     if (n < 0) {
-        LOG_WARN("First attempt failed (needed %d tokens), retrying with exact size", -n);
         toks.resize(static_cast<size_t>(-n));
         n = llama_tokenize(vocab, text.c_str(), static_cast<int32_t>(text.size()),
                            toks.data(), static_cast<int32_t>(toks.size()), true, true);
@@ -164,14 +129,9 @@ std::vector<llama_token> ModelState::tokenize(const std::string &text) const {
     }
 
     toks.resize(static_cast<size_t>(n));
-    LOG_INFO("✓ Tokenization successful: %d tokens", n);
-    LOG_INFO("=== tokenize END ===");
     return toks;
 }
 
-//////////////////////////////////////////////////////////////////////
-// Detokenization
-//////////////////////////////////////////////////////////////////////
 
 std::string ModelState::detokenize_single(llama_token t) const {
     if (!model) {
@@ -189,17 +149,15 @@ std::string ModelState::detokenize_single(llama_token t) const {
     int n = llama_token_to_piece(vocab, t, buffer, sizeof(buffer) - 1, 0, false);
 
     if (n < 0) {
-        LOG_INFO("Token %d needs larger buffer (%d bytes), retrying", static_cast<int>(t), -n);
         std::string out(static_cast<size_t>(-n), '\0');
         n = llama_token_to_piece(vocab, t, out.data(), -n, 0, false);
         if (n < 0) {
-            LOG_ERROR("❌ Failed to detokenize token %d", static_cast<int>(t));
             return {};
         }
         return out;
     }
 
-    return std::string(buffer, static_cast<size_t>(n));
+    return {buffer, static_cast<size_t>(n)};
 }
 
 std::string ModelState::detokenize_buffered(llama_token t) {
@@ -209,12 +167,8 @@ std::string ModelState::detokenize_buffered(llama_token t) {
         LOG_WARN("detokenize_buffered: empty piece for token %d", static_cast<int>(t));
         return {};
     }
-
-    LOG_INFO("Token %d -> '%s' (%zu bytes)", static_cast<int>(t), piece.c_str(), piece.size());
-
     // Add to carry buffer
     utf8_carry_buffer += piece;
-    LOG_INFO("Carry buffer size: %zu bytes", utf8_carry_buffer.size());
 
     // Extract complete UTF-8 characters
     std::string complete_chars;
@@ -239,9 +193,6 @@ std::string ModelState::detokenize_buffered(llama_token t) {
             i++;
             continue;
         }
-
-        LOG_INFO("UTF-8 char at pos %zu: len=%zu, start=0x%02X", i, char_len, c);
-
         // Check if we have enough bytes for complete character
         if (i + char_len > utf8_carry_buffer.size()) {
             LOG_INFO("Incomplete UTF-8 char (need %zu, have %zu), keeping in buffer",
@@ -263,7 +214,6 @@ std::string ModelState::detokenize_buffered(llama_token t) {
         if (valid) {
             // Complete valid UTF-8 character
             std::string utf8_char = utf8_carry_buffer.substr(i, char_len);
-            LOG_INFO("✓ Complete UTF-8 char: '%s' (%zu bytes)", utf8_char.c_str(), char_len);
             complete_chars.append(utf8_char);
             i += char_len;
         } else {
@@ -272,22 +222,15 @@ std::string ModelState::detokenize_buffered(llama_token t) {
             i++;
         }
     }
-
-    // Remove processed characters from buffer
     utf8_carry_buffer = utf8_carry_buffer.substr(i);
-    LOG_INFO("Remaining in buffer: %zu bytes, returning: %zu bytes ('%s')",
-             utf8_carry_buffer.size(), complete_chars.size(), complete_chars.c_str());
-
     return complete_chars;
 }
 
 std::string ModelState::flush_utf8_buffer() {
-    LOG_INFO("=== flush_utf8_buffer ===");
     std::string remaining = utf8_carry_buffer;
     utf8_carry_buffer.clear();
 
     if (!remaining.empty()) {
-        LOG_WARN("⚠️ Flushing incomplete UTF-8 sequence: %zu bytes", remaining.size());
         for (size_t i = 0; i < remaining.size(); ++i) {
             LOG_WARN("  [%zu] = 0x%02X", i, static_cast<unsigned char>(remaining[i]));
         }
@@ -297,10 +240,6 @@ std::string ModelState::flush_utf8_buffer() {
 
     return remaining;
 }
-
-//////////////////////////////////////////////////////////////////////
-// Helper functions
-//////////////////////////////////////////////////////////////////////
 
 llama_token ModelState::space_token() const {
     if (!model) return 0;

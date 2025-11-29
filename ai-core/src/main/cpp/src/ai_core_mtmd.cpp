@@ -79,7 +79,6 @@ Java_com_mp_ai_1core_MtmdLib_nativeInitMTMD(JNIEnv* env, jobject,
     params.use_gpu = static_cast<bool>(use_gpu);
     params.print_timings = false;
     params.n_threads = static_cast<int>(n_threads > 0 ? n_threads : 4);
-    params.verbosity = GGML_LOG_LEVEL_INFO;
     params.media_marker = mtmd_default_marker(); // "<__media__>"
 
     // Initialize MTMD context
@@ -137,7 +136,7 @@ Java_com_mp_ai_1core_MtmdLib_nativeGetMTMDInfo(JNIEnv* env, jobject) {
     json << "{";
     json << "\"vision_support\":" << (mtmd_support_vision(g_mtmd_state.ctx) ? "true" : "false") << ",";
     json << "\"audio_support\":" << (mtmd_support_audio(g_mtmd_state.ctx) ? "true" : "false") << ",";
-    json << "\"default_marker\":\"" << mtmd_default_marker() << "\",";
+    json << R"("default_marker":")" << mtmd_default_marker() << "\",";
     json << "\"use_non_causal\":" << (mtmd_decode_use_non_causal(g_mtmd_state.ctx) ? "true" : "false") << ",";
     json << "\"use_mrope\":" << (mtmd_decode_use_mrope(g_mtmd_state.ctx) ? "true" : "false");
 

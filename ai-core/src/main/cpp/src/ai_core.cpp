@@ -1,5 +1,5 @@
 /*=============================================================
- *   ai_core.cpp - WITH COMPREHENSIVE LOGGING
+ *   ai_core.cpp - OPTIMIZED LOGGING VERSION
  *=============================================================*/
 
 #include "state/model_state.h"
@@ -20,6 +20,15 @@
 #include <string>
 #include <mutex>
 
+// Enable detailed logging only in debug builds
+#ifdef NDEBUG
+#define LOG_VERBOSE(...)
+#define LOG_DETAIL(...)
+#else
+#define LOG_VERBOSE(...) LOG_INFO(__VA_ARGS__)
+    #define LOG_DETAIL(...) LOG_INFO(__VA_ARGS__)
+#endif
+
 /*  --------------------------------------------------------------
  *      Global state and guard
  *  -------------------------------------------------------------- */
@@ -30,19 +39,14 @@ static std::atomic<bool> g_stop_requested{false};
  *      Helper – build & init grammar when tools enabled
  *  -------------------------------------------------------------- */
 static void maybe_init_grammar() {
-    LOG_INFO("maybe_init_grammar: tools_enabled=%d", static_cast<int>(g_state.tools_enabled));
     if (!g_state.tools_enabled) {
-        LOG_INFO("Tools disabled, skipping grammar init");
         return;
     }
 
-    LOG_INFO("Initializing tool-call grammar");
     const std::string grammar = chat::build_tool_grammar(g_state.tools_json);
-    LOG_INFO("Grammar built, length=%zu", grammar.size());
 
     if (!grammar.empty()) {
         if (g_state.grammar_sampler) {
-            LOG_INFO("Freeing existing grammar sampler");
             llama_sampler_free(g_state.grammar_sampler);
         }
 
@@ -57,11 +61,7 @@ static void maybe_init_grammar() {
         if (!g_state.grammar_sampler) {
             LOG_ERROR("Tool grammar initialization failed");
             g_state.tools_enabled = false;
-        } else {
-            LOG_INFO("Grammar sampler initialized successfully");
         }
-    } else {
-        LOG_WARN("Empty grammar string generated");
     }
 }
 
@@ -81,46 +81,32 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
                                           jfloat mirostatTau,
                                           jfloat mirostatEta,
                                           jint seed) {
-    LOG_INFO("=== nativeInit START ===");
+    LOG_INFO("Initializing model...");
     std::lock_guard<std::mutex> lk(g_init_mtx);
 
     const std::string path = utf8::from_jstring(env, jpath);
-    LOG_INFO("Model path: %s", path.c_str());
-    LOG_INFO("Parameters: threads=%d, ctx=%d, temp=%.2f, topK=%d, topP=%.2f, minP=%.2f",
-             static_cast<int>(jthreads), static_cast<int>(ctxSize), temp,
-             static_cast<int>(topK), topP, minP);
-    LOG_INFO("Mirostat: mode=%d, tau=%.2f, eta=%.2f, seed=%d",
-             static_cast<int>(mirostat), mirostatTau, mirostatEta, static_cast<int>(seed));
+    LOG_VERBOSE("Model path: %s, threads=%d, ctx=%d", path.c_str(),
+                static_cast<int>(jthreads), static_cast<int>(ctxSize));
 
-    LOG_INFO("Releasing old state...");
     g_state.release();
-
-    LOG_INFO("Initializing llama backend...");
     llama_backend_init();
 
     int phys = count_physical_cores();
     int nthreads = (jthreads > 0) ? static_cast<int>(jthreads) : phys;
-    LOG_INFO("Physical cores detected: %d, using threads: %d", phys, nthreads);
 
-    LOG_INFO("Setting up model params...");
     llama_model_params mparams = llama_model_default_params();
     mparams.n_gpu_layers = 0;
     mparams.use_mmap = true;
     mparams.use_mlock = false;
     mparams.check_tensors = true;
-    LOG_INFO("Model params: gpu_layers=%d, mmap=%d, mlock=%d, check_tensors=%d",
-             mparams.n_gpu_layers, mparams.use_mmap, mparams.use_mlock, mparams.check_tensors);
 
-    LOG_INFO("Loading model from file...");
     g_state.model = llama_model_load_from_file(path.c_str(), mparams);
     if (!g_state.model) {
-        LOG_ERROR("FATAL: Failed to load model from '%s'", path.c_str());
+        LOG_ERROR("Failed to load model from '%s'", path.c_str());
         g_state.release();
         return JNI_FALSE;
     }
-    LOG_INFO("✓ Model loaded successfully");
 
-    LOG_INFO("Setting up context params...");
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = ctxSize;
     cparams.n_batch = 512;
@@ -130,41 +116,23 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
     cparams.offload_kqv = false;
     cparams.n_seq_max = 1;
     cparams.no_perf = false;
-    LOG_INFO("Context params: n_ctx=%d, n_batch=%d, n_ubatch=%d, n_threads=%d, n_seq_max=%d",
-             cparams.n_ctx, cparams.n_batch, cparams.n_ubatch, cparams.n_threads, cparams.n_seq_max);
 
-    LOG_INFO("Creating context from model...");
     g_state.ctx = llama_init_from_model(g_state.model, cparams);
     if (!g_state.ctx) {
-        LOG_ERROR("FATAL: Failed to create context");
+        LOG_ERROR("Failed to create context");
         g_state.release();
         return JNI_FALSE;
     }
-    LOG_INFO("✓ Context created successfully");
 
     g_state.ctx_size = ctxSize;
     g_state.batch_size = cparams.n_batch;
-    LOG_INFO("State configured: ctx_size=%d, batch_size=%d", g_state.ctx_size, g_state.batch_size);
 
-    LOG_INFO("Building sampler chain...");
-    g_state.rebuild_sampler(static_cast<int>(topK),
-                            topP,
-                            temp,
-                            minP,
-                            mirostat,
-                            mirostatTau,
-                            mirostatEta,
-                            seed);
-    LOG_INFO("✓ Sampler chain built");
-
-    LOG_INFO("Warming up context...");
+    g_state.rebuild_sampler(static_cast<int>(topK), topP, temp, minP,
+                            mirostat, mirostatTau, mirostatEta, seed);
     g_state.warmup_context();
-    LOG_INFO("✓ Context warmed up");
-
-    LOG_INFO("Initializing grammar (if needed)...");
     maybe_init_grammar();
 
-    LOG_INFO("=== nativeInit COMPLETED SUCCESSFULLY ===");
+    LOG_INFO("Model initialized successfully");
     return JNI_TRUE;
 }
 
@@ -173,10 +141,9 @@ Java_com_mp_ai_1core_NativeLib_nativeInit(JNIEnv* env, jobject,
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeRelease(JNIEnv*, jobject) {
-    LOG_INFO("=== nativeRelease called ===");
     std::lock_guard<std::mutex> lk(g_init_mtx);
     g_state.release();
-    LOG_INFO("=== nativeRelease completed ===");
+    LOG_INFO("Resources released");
     return JNI_TRUE;
 }
 
@@ -187,16 +154,14 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetSystemPrompt(JNIEnv* env, jobject,
                                                      jstring jprompt) {
     g_state.system_prompt = utf8::from_jstring(env, jprompt);
-    LOG_INFO("System prompt updated: %zu bytes, first 100 chars: '%.100s'",
-             g_state.system_prompt.size(), g_state.system_prompt.c_str());
+    LOG_VERBOSE("System prompt updated: %zu bytes", g_state.system_prompt.size());
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSetChatTemplate(JNIEnv* env, jobject,
                                                      jstring jtemplate) {
     g_state.chat_template_override = utf8::from_jstring(env, jtemplate);
-    LOG_INFO("Chat template override set: %zu bytes, first 100 chars: '%.100s'",
-             g_state.chat_template_override.size(), g_state.chat_template_override.c_str());
+    LOG_VERBOSE("Chat template set: %zu bytes", g_state.chat_template_override.size());
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -204,9 +169,7 @@ Java_com_mp_ai_1core_NativeLib_nativeSetToolsJson(JNIEnv* env, jobject,
                                                   jstring jtools) {
     g_state.tools_json = utf8::from_jstring(env, jtools);
     g_state.tools_enabled = !g_state.tools_json.empty();
-    LOG_INFO("Tools JSON set: %zu bytes, enabled=%d, content: '%.200s'",
-             g_state.tools_json.size(), static_cast<int>(g_state.tools_enabled),
-             g_state.tools_json.c_str());
+    LOG_VERBOSE("Tools enabled: %d", static_cast<int>(g_state.tools_enabled));
     maybe_init_grammar();
 }
 
@@ -216,7 +179,7 @@ Java_com_mp_ai_1core_NativeLib_nativeSetToolsJson(JNIEnv* env, jobject,
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv*, jobject) {
     g_stop_requested.store(true);
-    LOG_INFO("⚠️ Stop generation requested");
+    LOG_INFO("Stop requested");
 }
 
 /*  --------------------------------------------------------------
@@ -224,17 +187,12 @@ Java_com_mp_ai_1core_NativeLib_nativeStopGeneration(JNIEnv*, jobject) {
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeClearMemory(JNIEnv*, jobject) {
-    LOG_INFO("Clearing KV cache...");
     if (g_state.ctx) {
         llama_memory_t mem = llama_get_memory(g_state.ctx);
         if (mem) {
             llama_memory_clear(mem, true);
-            LOG_INFO("✓ KV cache cleared");
-        } else {
-            LOG_WARN("Failed to get memory handle");
+            LOG_VERBOSE("KV cache cleared");
         }
-    } else {
-        LOG_WARN("Context is null, cannot clear memory");
     }
 }
 
@@ -246,168 +204,102 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv* env, jobject,
                                                     jstring jprompt,
                                                     jint max_tokens,
                                                     jobject jcallback) {
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("=== nativeGenerateStream START ===");
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("Requested max_tokens: %d", static_cast<int>(max_tokens));
+    LOG_INFO("Starting generation (max_tokens=%d)", static_cast<int>(max_tokens));
 
     if (!g_state.is_ready()) {
-        LOG_ERROR("❌ Model not ready: model=%p, ctx=%p", g_state.model, g_state.ctx);
+        LOG_ERROR("Model not initialized");
         jni::on_error(env, jcallback, "Model not initialized");
         return JNI_FALSE;
     }
-    LOG_INFO("✓ Model state ready check: PASSED");
 
-    LOG_INFO("Preparing for generation...");
     g_state.prepare_for_generation();
     g_stop_requested.store(false);
-    LOG_INFO("✓ State prepared, stop flag reset");
 
     const std::string user_msg = utf8::from_jstring(env, jprompt);
-    LOG_INFO("User message (%zu bytes): '%s'", user_msg.size(), user_msg.c_str());
-
     const llama_vocab* vocab = llama_model_get_vocab(g_state.model);
+
     if (!vocab) {
-        LOG_ERROR("❌ Failed to get vocab from model");
+        LOG_ERROR("Failed to get vocab");
         jni::on_error(env, jcallback, "Failed to get vocab");
         return JNI_FALSE;
     }
-    LOG_INFO("✓ Vocab retrieved");
 
-    // Build the final prompt + template
+    // Build prompt with optional tool preamble
     std::string system = g_state.system_prompt;
-    LOG_INFO("System prompt: %zu bytes", system.size());
-
     if (g_state.tools_enabled) {
-        LOG_INFO("Tools enabled, building preamble...");
-        std::string preamble = chat::build_tool_preamble(g_state.tools_json);
-        LOG_INFO("Tool preamble: %zu bytes", preamble.size());
-        system += "\n" + preamble;
-        LOG_INFO("System + preamble: %zu bytes", system.size());
+        system += "\n" + chat::build_tool_preamble(g_state.tools_json);
     }
 
-    LOG_INFO("Applying chat template...");
-    const std::string prompt = chat::apply_template(g_state.model,
-                                                    system,
-                                                    user_msg,
-                                                    g_state.chat_template_override,
-                                                    true);
+    const std::string prompt = chat::apply_template(g_state.model, system, user_msg,
+                                                    g_state.chat_template_override, true);
+    LOG_VERBOSE("Prompt size: %zu bytes", prompt.size());
 
-    LOG_INFO("✓ Final prompt size: %zu bytes", prompt.size());
-    LOG_INFO("First 300 chars: '%.300s'", prompt.c_str());
-    if (prompt.size() > 300) {
-        LOG_INFO("Last 100 chars: '%.100s'", prompt.c_str() + prompt.size() - 100);
-    }
-
-    // Tokenise prompt
-    LOG_INFO("Tokenizing prompt...");
+    // Tokenize
     std::vector<llama_token> prompt_toks = g_state.tokenize(prompt);
     if (prompt_toks.empty()) {
-        LOG_ERROR("❌ Tokenization returned empty vector");
+        LOG_ERROR("Tokenization failed");
         jni::on_error(env, jcallback, "Tokenisation failed");
         return JNI_FALSE;
     }
-    LOG_INFO("✓ Tokenization successful: %zu tokens", prompt_toks.size());
-    LOG_INFO("First 10 tokens: ", "");
-    for (size_t i = 0; i < std::min<size_t>(10, prompt_toks.size()); ++i) {
-        LOG_INFO("  [%zu] = %d", i, static_cast<int>(prompt_toks[i]));
-    }
 
-    // Limit generation by context
+    // Check context limits
     int32_t available = g_state.ctx_size - static_cast<int32_t>(prompt_toks.size()) - 8;
-    LOG_INFO("Context calculation:");
-    LOG_INFO("  ctx_size = %d", g_state.ctx_size);
-    LOG_INFO("  prompt_tokens = %zu", prompt_toks.size());
-    LOG_INFO("  reserved = 8");
-    LOG_INFO("  available = %d", available);
-
     if (available <= 0) {
-        LOG_ERROR("❌ Context overflow: available=%d", available);
+        LOG_ERROR("Context overflow (prompt=%zu, ctx=%d)",
+                  prompt_toks.size(), g_state.ctx_size);
         jni::on_error(env, jcallback, "Context overflow – shorten your prompt");
         return JNI_TRUE;
     }
 
     auto to_generate = static_cast<int32_t>(max_tokens > 0 ? max_tokens : 128);
     to_generate = std::min(to_generate, available);
-    LOG_INFO("✓ Will generate: %d tokens (requested=%d, available=%d)",
-             to_generate, static_cast<int>(max_tokens), available);
+    LOG_VERBOSE("Generating %d tokens (available=%d)", to_generate, available);
 
-    // Feed prompt first
-    LOG_INFO("──────────────────────────────────────────────────");
-    LOG_INFO("Starting prompt decode (%zu tokens)...", prompt_toks.size());
+    // Decode prompt
     if (!g_state.decode_prompt(prompt_toks)) {
-        LOG_ERROR("❌ decode_prompt() returned false");
+        LOG_ERROR("Prompt decode failed");
         jni::on_error(env, jcallback, "Decoding prompt failed");
         return JNI_TRUE;
     }
-    LOG_INFO("✓ Prompt decode completed successfully");
-    LOG_INFO("──────────────────────────────────────────────────");
 
     /* ---------------------------------------------------------
-     *  Streaming loop – one token at a time
+     *  Streaming loop – CRITICAL PATH, minimal logging
      * -------------------------------------------------------- */
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("=== STARTING TOKEN GENERATION LOOP ===");
-    LOG_INFO("════════════════════════════════════════════════════");
-
     ToolCallState tool_state;
     llama_token eos = llama_vocab_eos(vocab);
     llama_token eot = llama_vocab_eot(vocab);
-    LOG_INFO("Special tokens: EOS=%d, EOT=%d", static_cast<int>(eos), static_cast<int>(eot));
 
     llama_batch single = llama_batch_init(1, 0, 1);
-    LOG_INFO("Batch initialized for streaming (size=1)");
-
     g_state.utf8_carry_buffer.clear();
-    LOG_INFO("UTF-8 carry buffer cleared");
 
     int tokens_generated = 0;
     for (int i = 0; i < to_generate && !g_stop_requested.load(); ++i) {
-        if (i % 5 == 0) {
-            LOG_INFO("─── Generation step %d/%d ───", i, to_generate);
-        }
-
         // Sample & accept
-        LOG_INFO("[%d] Sampling token...", i);
         llama_token tok = llama_sampler_sample(g_state.sampler, g_state.ctx, -1);
-        LOG_INFO("[%d] ✓ Sampled token: %d", i, static_cast<int>(tok));
-
         llama_sampler_accept(g_state.sampler, tok);
-        LOG_INFO("[%d] ✓ Token accepted by sampler", i);
 
-        // Turn EOS into space if first token
+        // Convert EOS to space if first token
         if (i == 0 && (tok == eos || tok == eot)) {
-            LOG_INFO("[%d] ⚠️ First token is EOS/EOT (%d), converting to space", i, static_cast<int>(tok));
             tok = g_state.space_token();
-            LOG_INFO("[%d] Converted to space token: %d", i, static_cast<int>(tok));
         }
 
+        // Check for end
         if (tok == eos || tok == eot) {
-            LOG_INFO("[%d] 🛑 Generated EOS/EOT token (%d) - STOPPING", i, static_cast<int>(tok));
+            LOG_DETAIL("Generated EOS/EOT at token %d", i);
             break;
         }
 
-        // Use buffered detokenization
-        LOG_INFO("[%d] Detokenizing token %d...", i, static_cast<int>(tok));
+        // Detokenize with buffering
         std::string complete_chars = g_state.detokenize_buffered(tok);
-        LOG_INFO("[%d] Detokenized: '%s' (len=%zu, buffer_size=%zu)",
-                 i, complete_chars.c_str(), complete_chars.size(), g_state.utf8_carry_buffer.size());
 
-        // Only process if we got complete UTF-8 characters
         if (!complete_chars.empty()) {
-            LOG_INFO("[%d] Processing %zu complete UTF-8 chars", i, complete_chars.size());
-
             // Tool-call detection
-            bool complete = false;
             if (g_state.tools_enabled) {
-                LOG_INFO("[%d] Checking for tool patterns...", i);
-                complete = tool_state.accumulate(complete_chars);
+                bool complete = tool_state.accumulate(complete_chars);
                 if (complete) {
-                    LOG_INFO("[%d] ✓ Tool call pattern completed!", i);
                     std::string name, payload;
                     if (tool_state.extract_tool_call(name, payload)) {
-                        LOG_INFO("[%d] Tool call extracted: name='%s', payload='%s'",
-                                 i, name.c_str(), payload.c_str());
+                        LOG_INFO("Tool call: %s", name.c_str());
                         jni::on_toolcall(env, jcallback, name, payload);
                         break;
                     }
@@ -417,67 +309,45 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv* env, jobject,
 
             // Emit complete UTF-8 characters
             if (!tool_state.is_collecting()) {
-                LOG_INFO("[%d] 📤 Emitting to callback: '%s'", i, complete_chars.c_str());
                 jni::on_token(env, jcallback, complete_chars);
                 tokens_generated++;
-            } else {
-                LOG_INFO("[%d] ⏸️ Tool state collecting - not emitting yet", i);
             }
-        } else {
-            LOG_INFO("[%d] ⏳ No complete UTF-8 chars yet (buffering)", i);
         }
 
-        // Prepare batch for next token
+        // Prepare next batch
         single.n_tokens = 1;
         single.token[0] = tok;
         single.pos[0] = static_cast<int32_t>(prompt_toks.size() + i);
         single.n_seq_id[0] = 1;
         single.seq_id[0][0] = 0;
         single.logits[0] = true;
-        LOG_INFO("[%d] Prepared batch: pos=%d", i, single.pos[0]);
 
-        LOG_INFO("[%d] Calling llama_decode...", i);
         int decode_result = llama_decode(g_state.ctx, single);
         if (decode_result != 0) {
-            LOG_ERROR("[%d] ❌ llama_decode FAILED with code: %d", i, decode_result);
+            LOG_ERROR("Decode failed at token %d (code=%d)", i, decode_result);
             jni::on_error(env, jcallback, "llama_decode failed during generation");
             break;
         }
-        LOG_INFO("[%d] ✓ llama_decode successful", i);
 
         if (env->ExceptionCheck()) {
-            LOG_ERROR("[%d] ❌ Java exception detected - aborting", i);
+            LOG_ERROR("Java exception during generation");
             env->ExceptionClear();
             break;
         }
     }
 
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("=== TOKEN GENERATION LOOP ENDED ===");
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("Tokens generated: %d", tokens_generated);
+    LOG_INFO("Generation complete (%d tokens)", tokens_generated);
 
-    LOG_INFO("Flushing UTF-8 buffer...");
+    // Cleanup
     std::string remaining = g_state.flush_utf8_buffer();
     if (!remaining.empty()) {
-        LOG_INFO("Flushed remaining bytes: '%s' (len=%zu)", remaining.c_str(), remaining.size());
         jni::on_token(env, jcallback, remaining);
-    } else {
-        LOG_INFO("No remaining bytes in buffer");
     }
 
-    LOG_INFO("Freeing batch...");
     llama_batch_free(single);
-
-    LOG_INFO("Flushing carry...");
     utf8::flush_carry(env, jcallback);
-
-    LOG_INFO("Calling on_done callback...");
     jni::on_done(env, jcallback);
 
-    LOG_INFO("════════════════════════════════════════════════════");
-    LOG_INFO("=== nativeGenerateStream COMPLETED ===");
-    LOG_INFO("════════════════════════════════════════════════════");
     return JNI_TRUE;
 }
 
@@ -486,7 +356,6 @@ Java_com_mp_ai_1core_NativeLib_nativeGenerateStream(JNIEnv* env, jobject,
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT void JNICALL
 Java_com_mp_ai_1core_NativeLib_llamaPrintTimings(JNIEnv*, jobject) {
-    LOG_INFO("Printing system info and timings...");
     llama_print_system_info();
     llama_perf_context_print(g_state.ctx);
 }
@@ -654,46 +523,39 @@ Java_com_mp_ai_1core_NativeLib_nativeGetModelInfo(JNIEnv* env, jobject) {
  *  -------------------------------------------------------------- */
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeGetStateSize(JNIEnv*, jobject) {
-    jlong size = g_state.get_state_size();
-    LOG_INFO("State size: %lld bytes", size);
-    return size;
+    return g_state.get_state_size();
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeGetStateData(JNIEnv* env, jobject) {
     jlong sz = g_state.get_state_size();
-    if (!sz) {
-        LOG_WARN("State size is 0, returning null");
-        return nullptr;
-    }
+    if (!sz) return nullptr;
 
-    LOG_INFO("Getting state data: %lld bytes", sz);
     jbyteArray arr = env->NewByteArray(static_cast<jsize>(sz));
     if (!arr) {
-        LOG_ERROR("Failed to allocate byte array");
+        LOG_ERROR("Failed to allocate state array");
         return nullptr;
     }
 
     void* buffer = env->GetByteArrayElements(arr, nullptr);
     g_state.get_state_data(buffer, static_cast<size_t>(sz));
     env->ReleaseByteArrayElements(arr, (jbyte*)buffer, 0);
-    LOG_INFO("✓ State data retrieved");
     return arr;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeLoadStateData(JNIEnv* env, jobject,
                                                    jbyteArray arr) {
-    if (!arr) {
-        LOG_ERROR("Null array provided");
-        return JNI_FALSE;
-    }
+    if (!arr) return JNI_FALSE;
+
     jbyte* buf = env->GetByteArrayElements(arr, nullptr);
     auto len = static_cast<size_t>(env->GetArrayLength(arr));
-    LOG_INFO("Loading state data: %zu bytes", len);
     bool ok = g_state.load_state_data(buf, len);
     env->ReleaseByteArrayElements(arr, buf, JNI_ABORT);
-    LOG_INFO("Load state: %s", ok ? "SUCCESS" : "FAILED");
+
+    if (!ok) {
+        LOG_ERROR("Failed to load state data");
+    }
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -701,10 +563,12 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeSaveStateFile(JNIEnv* env, jobject,
                                                    jstring jpath) {
     const char* path = env->GetStringUTFChars(jpath, nullptr);
-    LOG_INFO("Saving state to file: %s", path);
     bool ok = llama_state_save_file(g_state.ctx, path, nullptr, 0);
     env->ReleaseStringUTFChars(jpath, path);
-    LOG_INFO("Save state file: %s", ok ? "SUCCESS" : "FAILED");
+
+    if (!ok) {
+        LOG_ERROR("Failed to save state to file");
+    }
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -712,9 +576,11 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_mp_ai_1core_NativeLib_nativeLoadStateFile(JNIEnv* env, jobject,
                                                    jstring jpath) {
     const char* path = env->GetStringUTFChars(jpath, nullptr);
-    LOG_INFO("Loading state from file: %s", path);
     bool ok = llama_state_load_file(g_state.ctx, path, nullptr, 0, nullptr);
     env->ReleaseStringUTFChars(jpath, path);
-    LOG_INFO("Load state file: %s", ok ? "SUCCESS" : "FAILED");
+
+    if (!ok) {
+        LOG_ERROR("Failed to load state from file");
+    }
     return ok ? JNI_TRUE : JNI_FALSE;
 }
