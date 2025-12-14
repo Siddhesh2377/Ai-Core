@@ -67,11 +67,15 @@ class AudioService : Service() {
 
         //region STT
 
-        override fun initializeStt(modelDir: String, modelType: Int, numThreads: Int): Boolean {
+        override fun initializeStt( modelDir: String,
+                                    encoder: String,
+                                    decoder: String,
+                                    tokens: String,
+                                    numThreads: Int): Boolean {
             val deferred = CompletableDeferred<Boolean>()
             scope.launch {
                 deferred.complete(
-                    sttEngine.initialize(modelDir, modelType, null, numThreads).isSuccess
+                    sttEngine.initialize(modelDir, encoder, decoder, tokens, numThreads).isSuccess
                 )
             }
             return deferred.asCompletableFuture().get()

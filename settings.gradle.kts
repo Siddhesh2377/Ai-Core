@@ -20,5 +20,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "Ai-Core"
-include(":app")
 include(":ai-core")

@@ -44,43 +44,35 @@ class STTEngine(
     // ------------------------------------------------------------------
     suspend fun initialize(
         modelDir: String,
-        modelType: Int = 2,
-        modelConfig: OfflineModelConfig? = null,
+        encoder: String,
+        decoder: String,
+        tokens: String,
         numThreads: Int = 2
     ): Result<Unit> = withContext(scope) {
         if (isLoading.get()) return@withContext Result.failure(
             IllegalStateException("Initialization already in progress")
         )
-        if (isReady() && currentModelType == modelType && modelConfig == null) {
-            return@withContext Result.success(Unit)
-        }
 
         isLoading.set(true)
         try {
             mutex.withLock {
-                if (isReady() && currentModelType == modelType && modelConfig == null) {
-                    isLoading.set(false)
-                    return@withContext Result.success(Unit)
-                }
-
-                val cfg = modelConfig ?: getOfflineModelConfig(
-                    type = modelType,
-                    modelDir = modelDir
-                ) ?: return@withContext Result.failure(
-                    IllegalArgumentException("Invalid model type: $modelType")
-                )
-
-                cfg.numThreads = numThreads.coerceIn(2, 4)
-
                 val config = OfflineRecognizerConfig(
                     featConfig = FeatureConfig(),
-                    modelConfig = cfg,
+                    modelConfig = OfflineModelConfig(
+                        whisper = OfflineWhisperModelConfig(
+                            encoder = "$modelDir/$encoder",
+                            decoder = "$modelDir/$decoder",
+                        ),
+                        tokens = "$modelDir/$tokens",
+                        modelType = "whisper",
+                        numThreads = numThreads,
+                    ),
+
                     decodingMethod = "greedy_search"
                 )
 
                 recognizer?.release()
                 recognizer = OfflineRecognizer(config = config)
-                currentModelType = modelType
             }
             Result.success(Unit)
         } catch (e: Exception) {
